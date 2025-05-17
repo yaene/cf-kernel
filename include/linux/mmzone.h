@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-2.0 */
+#define CONFIG_ADD_ZONE 1
 #ifndef _LINUX_MMZONE_H
 #define _LINUX_MMZONE_H
 
@@ -30,7 +31,22 @@
 #define MAX_ORDER CONFIG_FORCE_MAX_ZONEORDER
 #endif
 #define MAX_ORDER_NR_PAGES (1 << (MAX_ORDER - 1))
-
+#ifdef CONFIG_ADD_ZONE
+#define SUBARRAY_SIZE (512 * PAGE_SIZE)  // 2MB
+#define SUBARRAY_PAGES 512
+#define SUBARRAY_SHIFT 21
+#define CUSTOM_ZONE_PAGES (512 * 512 )     // total pages of zone_custom
+struct subarray {
+    spinlock_t lock;
+    struct page *free_pages;
+	// unsigned long bitmap[BITS_TO_LONGS(SUBARRAY_PAGES)];
+  // TODO: [yb] probably better to use int64_t here for the bitmap
+	unsigned long bitmap[8];
+    unsigned int count;	//num of free pages in this subarray
+    unsigned long start_pfn;
+    unsigned long end_pfn;
+} ____cacheline_aligned;
+#endif
 /*
  * PAGE_ALLOC_COSTLY_ORDER is the order at which allocations are deemed
  * costly to service.  That is between allocation orders which should
@@ -589,6 +605,9 @@ enum zone_type {
 	 * transfers to all addressable memory.
 	 */
 	ZONE_NORMAL,
+#ifdef CONFIG_ADD_ZONE
+	ZONE_CUSTOM, //introduced a custom memory zone to isolate all memory operations for specific tasks
+#endif
 #ifdef CONFIG_HIGHMEM
 	/*
 	 * A memory area that is only addressable by the kernel through
@@ -801,11 +820,21 @@ struct zone {
 	/* Zone statistics */
 	atomic_long_t		vm_stat[NR_VM_ZONE_STAT_ITEMS];
 	atomic_long_t		vm_numa_stat[NR_VM_NUMA_STAT_ITEMS];
-
+#ifdef CONFIG_ADD_ZONE
+/*	Since memory allocation during memory system initialization is inconvenient
+	,I directly implemented a fixed-length array. You can modify its size as needed.
+*/
+  // TODO: [yb] why 1026? also this breaks android's KABI, might cause problems with vendor modules
+  struct subarray subarrays[1026];
+  unsigned int num_subarrays;
+	unsigned long		zone_end_pfn;
+	ANDROID_KABI_RESERVE(1);
+#else
 	ANDROID_KABI_RESERVE(1);
 	ANDROID_KABI_RESERVE(2);
 	ANDROID_KABI_RESERVE(3);
 	ANDROID_KABI_RESERVE(4);
+#endif
 } ____cacheline_internodealigned_in_smp;
 
 enum pgdat_flags {

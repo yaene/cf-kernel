@@ -365,7 +365,9 @@ int __init security_init(void)
 		if (lsm->enabled)
 			lsm_append(lsm->name, &lsm_names);
 	}
-
+	#ifdef CONFIG_ADD_ZONE
+	init_allowed_uids();
+	#endif
 	/* Load LSMs in specified order. */
 	ordered_lsm_init();
 

@@ -79,7 +79,48 @@
 #include "internal.h"
 #include "shuffle.h"
 #include "page_reporting.h"
+#ifdef CONFIG_ADD_ZONE
+#include <asm/pgtable.h> 
+#define PAGE_PROT_BITS (PTE_VALID | PTE_WRITE | PTE_USER | PTE_PXN | PTE_UXN)
+#define MAX_ALLOWED_UIDS 32
+int allowed_uids[MAX_ALLOWED_UIDS];
+int num_allowed_uids;
+DEFINE_SPINLOCK(uid_list_lock);
+extern unsigned long custom_zone_start_pfn;
 
+
+//This function configures exclusive access to ZONE_CUSTOM for specified process PIDs.
+void __init init_allowed_uids(void)
+{
+    int initial_uids[] = {10156, 10152, 10178, 10139, 10129, 10133, 10076, 10142};
+    int i;
+    spin_lock_init(&uid_list_lock);
+    spin_lock(&uid_list_lock);
+
+    for (i = 0; i < ARRAY_SIZE(initial_uids) && num_allowed_uids < MAX_ALLOWED_UIDS; i++) {
+        allowed_uids[num_allowed_uids++] = initial_uids[i];
+    }
+    
+    spin_unlock(&uid_list_lock);
+}
+
+bool is_uid_allowed(int uid)
+{
+    bool found = false;
+    unsigned long flags;
+    int i;
+    spin_lock_irqsave(&uid_list_lock, flags);
+    for (i = 0; i < num_allowed_uids; i++) {
+        if (allowed_uids[i] == uid) {
+            found = true;
+            break;
+        }
+    }
+    spin_unlock_irqrestore(&uid_list_lock, flags);
+    
+    return found;
+}
+#endif
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
 typedef int __bitwise fpi_t;
 
@@ -303,6 +344,10 @@ int sysctl_lowmem_reserve_ratio[MAX_NR_ZONES] = {
 	[ZONE_DMA32] = 256,
 #endif
 	[ZONE_NORMAL] = 32,
+#ifdef CONFIG_ADD_ZONE
+//basic config
+	[ZONE_CUSTOM] = 0,
+#endif
 #ifdef CONFIG_HIGHMEM
 	[ZONE_HIGHMEM] = 0,
 #endif
@@ -317,6 +362,10 @@ static char * const zone_names[MAX_NR_ZONES] = {
 	 "DMA32",
 #endif
 	 "Normal",
+#ifdef CONFIG_ADD_ZONE
+//basic config
+	 "Custom",
+#endif
 #ifdef CONFIG_HIGHMEM
 	 "HighMem",
 #endif
@@ -3387,7 +3436,36 @@ void free_unref_page(struct page *page)
 	unsigned long pfn = page_to_pfn(page);
 	int migratetype;
 	bool freed_pcp = false;
-
+#ifdef CONFIG_ADD_ZONE
+//Specialized function for freeing order-0 pages
+//If page belongs to ZONE_CUSTOM, returns the page to subarray
+	struct subarray *sa;
+	unsigned int subarray_idx;
+	unsigned long idx;
+	struct zone *zone;
+	// unsigned long *word;
+	zone = page_zone(page);
+	if (strcmp(zone->name,"Custom")!=0)
+		goto origin;
+	//computer which subarray
+	subarray_idx = (pfn / 512) - (zone->zone_start_pfn / 512);
+	sa = &zone->subarrays[subarray_idx];
+	idx = pfn & 511;
+	spin_lock(&sa->lock);
+	__set_bit(idx, sa->bitmap);
+    
+    // 刷新被修改的bitmap字
+    // word = &sa->bitmap[idx / BITS_PER_LONG];
+    // __dma_flush_area(&sa->bitmap[idx/BITS_PER_LONG], sizeof(long));
+	__dma_flush_area(sa->bitmap, sizeof(sa->bitmap));
+	printk(KERN_INFO "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n" ,current->comm, subarray_idx,idx, page, page_to_pfn(page));
+	// page->next = sa->free_pages;
+	// sa->free_pages = page;
+	sa->count ++;
+	SetPageReserved(page);
+	spin_unlock(&sa->lock);
+	return ;
+origin:
 	if (!free_unref_page_prepare(page, pfn))
 		return;
 
@@ -3415,6 +3493,35 @@ void free_unref_page(struct page *page)
 	if (unlikely(!freed_pcp))
 		free_one_page(page_zone(page), page, pfn, 0, migratetype,
 			      FPI_NONE);
+#else
+if (!free_unref_page_prepare(page, pfn))
+		return;
+
+	/*
+	 * We only track unmovable, reclaimable, movable and cma on pcp lists.
+	 * Place ISOLATE pages on the isolated list because they are being
+	 * offlined but treat HIGHATOMIC as movable pages so we can get those
+	 * areas back if necessary. Otherwise, we may have to free
+	 * excessively into the page allocator
+	 */
+	migratetype = get_pcppage_migratetype(page);
+	if (unlikely(migratetype > MIGRATE_RECLAIMABLE)) {
+		if (unlikely(is_migrate_isolate(migratetype))) {
+			free_one_page(page_zone(page), page, pfn, 0, migratetype, FPI_NONE);
+			return;
+		}
+		if (migratetype == MIGRATE_HIGHATOMIC)
+			migratetype = MIGRATE_MOVABLE;
+	}
+
+	local_irq_save(flags);
+	freed_pcp = free_unref_page_commit(page, migratetype, false);
+	local_irq_restore(flags);
+
+	if (unlikely(!freed_pcp))
+		free_one_page(page_zone(page), page, pfn, 0, migratetype,
+			      FPI_NONE);
+#endif
 }
 
 /*
@@ -5323,6 +5430,103 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	unsigned int alloc_flags = ALLOC_WMARK_LOW;
 	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
 	struct alloc_context ac = { };
+#ifdef CONFIG_ADD_ZONE
+	struct zone *custom_zone;
+    struct subarray *sa;
+    int subarray_idx;
+	// void *addr;
+	unsigned long idx;
+	// unsigned long *word;
+    if (order == 0 && (strcmp(current->comm, "read_vs_mmap") == 0 || is_uid_allowed(current->cred->uid.val))) {
+        custom_zone = &NODE_DATA(preferred_nid)->node_zones[ZONE_CUSTOM];
+        if (custom_zone && strcmp(custom_zone->name, "Custom") == 0) {
+            for (subarray_idx = 0; subarray_idx < custom_zone->num_subarrays; subarray_idx++) {
+                sa = &custom_zone->subarrays[subarray_idx];
+				// printk(KERN_INFO "[add_zone]sbc:%d ubarray_idx:%d  page_count:%d start:%d  end:%d\n",custom_zone->num_subarrays,subarray_idx,sa->count, sa->start_pfn ,sa->end_pfn);
+				// continue;
+				// printk(KERN_INFO "[add_zone]sbidx:%d N=%s, c:%d , s:%d, e:%d\n",subarray_idx, current->comm, sa->count, sa->start_pfn, sa->end_pfn);
+                spin_lock(&sa->lock);
+                if (sa->count > 0 ) {
+					idx = find_first_bit(sa->bitmap, SUBARRAY_PAGES);
+					if (idx < SUBARRAY_PAGES) {
+						__clear_bit(idx, sa->bitmap);
+						// __set_bit(idx, sa->bitmap);
+						// word = &sa->bitmap[idx / BITS_PER_LONG];
+						// __dma_flush_area(word, sizeof(*word));
+						__dma_flush_area(sa->bitmap, sizeof(sa->bitmap));
+						
+						page = pfn_to_page(sa->start_pfn + idx);
+						flush_dcache_page(page); 
+						sa->count --;
+						printk(KERN_INFO "[add_zone]N=%s allocpage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n" ,current->comm, subarray_idx,idx, page, page_to_pfn(page));
+						spin_unlock(&sa->lock);
+						ClearPageReserved(page);
+						memset(page_address(page), 0, PAGE_SIZE);
+						goto origin;
+        				// return page;
+						// goto out;
+					}
+					// printk(KERN_INFO "[add_zone] subarray_idx:%d  page:%px pfn: %lu\n" , subarray_idx, page, page_to_pfn(page));
+				// printk(KERN_INFO "[add_zone] free pages count: %d\n", sa->count);
+				// cu_page = sa->free_pages;
+				// print_count = 0;
+				// while (cu_page && print_count < 5) {
+				// 	printk(KERN_INFO "[add_zone] subarray_idx:%d  page_idx:%d,  page:%px pfn: %lu  next:%px\n" , subarray_idx, print_count, cu_page, page_to_pfn(cu_page), cu_page ->next_page);
+
+				// 	cu_page = cu_page->next_page;
+				// 	print_count++;
+				// }
+					// spin_unlock(&sa->lock);
+					// continue;
+					// goto origin;
+					// page = sa->free_pages;
+					// spin_unlock(&sa->lock);
+						// goto origin;//This is the allocation function that iterates through the entire ZONE_CUSTOM to find available pages (could potentially be modified to use random subarray selection instead of sequential traversal). Currently, issues exist in this implementation, so all allocations are set to goto origin as a fallback path.
+        			// sa->free_pages = page->next;
+					// sa->count--;
+
+
+
+					// init_page_count(page);
+    				// memset(page_address(page), 0, PAGE_SIZE);
+
+					// addr = page_address(page);
+					// if (!virt_addr_valid(addr)) {
+					// 	spin_unlock(&sa->lock);
+					// 	printk(KERN_INFO "[add_zone] invalid addr\n");
+					// 	goto origin;
+					// }
+					// spin_unlock(&sa->lock);
+					// goto origin;
+					// return page;
+				}
+				spin_unlock(&sa->lock);
+			}
+			goto origin;
+		}	
+	}
+	else
+		goto origin;
+origin:
+			if (unlikely(order >= MAX_ORDER)) {
+		WARN_ON_ONCE(!(gfp_mask & __GFP_NOWARN));
+		return NULL;
+	}
+	gfp_mask &= gfp_allowed_mask;
+	alloc_mask = gfp_mask;
+	if (!prepare_alloc_pages(gfp_mask, order, preferred_nid, nodemask, &ac, &alloc_mask, &alloc_flags))
+		return NULL;
+
+	/*
+	 * Forbid the first pass from falling back to types that fragment
+	 * memory until all local zones are considered.
+	 */
+	alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp_mask);
+
+	/* First allocation attempt */
+	page = get_page_from_freelist(alloc_mask, order, alloc_flags, &ac);
+	if (likely(page))
+		goto out;
 
 	/*
 	 * There are several places where we assume that the order value is sane
@@ -5377,6 +5581,7 @@ out:
 
 	return page;
 }
+#endif
 EXPORT_SYMBOL(__alloc_pages_nodemask);
 
 /*
@@ -6509,6 +6714,58 @@ void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone,
 	}
 #endif
 
+#ifdef CONFIG_ADD_ZONE
+    if (zone == ZONE_CUSTOM) {
+//After initializing each page, inserts individual pages into their corresponding subarray queues.
+        struct zone *z = &NODE_DATA(nid)->node_zones[zone];
+        unsigned long sa_idx = 0;
+        unsigned long bitmap_idx;
+        for (pfn = start_pfn; pfn < end_pfn; ) {
+			struct page *page_z = pfn_to_page(pfn);
+            if (context == MEMINIT_EARLY) {
+                if (overlap_memmap_init(zone, &pfn))
+                    continue;
+                if (defer_init(nid, pfn, zone_end_pfn))
+                    break;
+            }
+
+            page_z = pfn_to_page(pfn);
+            __init_single_page(page_z, pfn, zone, nid);
+			if (PageReserved(page_z)) {
+				pfn++;
+				continue;
+			}
+            SetPageReserved(page_z);
+            
+            sa_idx = pfn / SUBARRAY_PAGES- z->zone_start_pfn / SUBARRAY_PAGES;
+            if (sa_idx < z->num_subarrays && sa_idx >=0) {
+                struct subarray *sa = &z->subarrays[sa_idx];
+				bitmap_idx = pfn & 511;
+                spin_lock(&sa->lock);
+				// page_z->next = NULL;
+                // page_z->next = sa->free_pages;
+                // sa->free_pages = page_z;
+                // sa->count++;
+				// if(page_to_pfn(sa->free_pages) != pfn || page_to_pfn(sa->free_pages) == page_to_pfn(sa->free_pages ->next))
+				// {
+				// 	sa->count--;
+				// 	sa->free_pages = sa->free_pages -> next;
+				// }
+				if (!test_and_set_bit(bitmap_idx, sa->bitmap)) {
+					sa->count++;
+					__dma_flush_area(sa->bitmap, sizeof(sa->bitmap));
+					// __flush_dcache_area(sa->bitmap, sizeof(sa->bitmap)); // ARM64必须
+				} else {
+					WARN_ONCE(1, "Page PFN %lu already activated\n", pfn);
+				}
+                spin_unlock(&sa->lock);
+				// early_printk(KERN_INFO "[init_zone] sb_idx:%d  pfn:%d\n", sa_idx , pfn);
+            }
+            pfn++;
+        }
+        return;
+    }
+#endif
 	for (pfn = start_pfn; pfn < end_pfn; ) {
 		/*
 		 * There can be holes in boot-time mem_map[]s handed to this
@@ -6943,7 +7200,65 @@ void __meminit init_currently_empty_zone(struct zone *zone,
 		pgdat->nr_zones = zone_idx;
 
 	zone->zone_start_pfn = zone_start_pfn;
+	#ifdef CONFIG_ADD_ZONE
+//This function initializes both the zone_custom and its subarrays.
+		if (strcmp(zone->name,"Custom")==0) {
+			unsigned int subarray_idx;
+			unsigned long start_pfn, end_pfn, current_pfn;
+			unsigned long subarray_start_idx, subarray_end_idx;
+			struct subarray *sa;
+			// int bit_i = 0;
 
+			start_pfn = zone->zone_start_pfn;
+			current_pfn = start_pfn;
+			end_pfn = start_pfn + size;
+			zone-> zone_end_pfn = end_pfn;
+			subarray_start_idx = start_pfn / 512;
+			subarray_end_idx = end_pfn / 512;
+			zone->num_subarrays = subarray_end_idx - subarray_start_idx + 1;
+
+			for (subarray_idx = 0; subarray_idx < zone->num_subarrays; subarray_idx++) {
+				unsigned long subarray_base_idx = subarray_start_idx + subarray_idx;
+				unsigned long subarray_start, subarray_end;
+				
+				sa = &zone->subarrays[subarray_idx];
+				// for(bit_i = 0; bit_i < 8;bit_i ++)
+				// 	sa->bitmap[bit_i]=0;
+				bitmap_zero(sa->bitmap, SUBARRAY_PAGES);
+				__dma_flush_area(sa->bitmap, sizeof(sa->bitmap));
+				subarray_start = subarray_base_idx << 9;
+				subarray_end = (subarray_base_idx + 1) << 9;
+				sa->free_pages = NULL;
+				// sa->start_pfn = (subarray_start > current_pfn) ? subarray_start : current_pfn;
+				// sa->end_pfn = (subarray_end < end_pfn) ? subarray_end : end_pfn;
+				sa->start_pfn = subarray_start;
+				sa->end_pfn = subarray_end;
+				spin_lock_init(&sa->lock);
+				sa->count = 0;
+				pr_info("Subarray %u: PFN [%lu, %lu), Pages = %lu\n",
+					subarray_idx, sa->start_pfn, sa->end_pfn, sa->count);
+				current_pfn = sa->end_pfn;
+			}
+			mminit_dprintk(MMINIT_TRACE, "memmap_init",
+			"Initialising map node %d zone %lu pfns %lu -> %lu\n",
+			pgdat->node_id,
+			(unsigned long)zone_idx(zone),
+			zone_start_pfn, (zone_start_pfn + size));
+
+			zone_init_free_lists(zone);
+			zone->initialized = 1;
+		}
+		else {
+			mminit_dprintk(MMINIT_TRACE, "memmap_init",
+			"Initialising map node %d zone %lu pfns %lu -> %lu\n",
+			pgdat->node_id,
+			(unsigned long)zone_idx(zone),
+			zone_start_pfn, (zone_start_pfn + size));
+
+			zone_init_free_lists(zone);
+			zone->initialized = 1;
+		}
+#else
 	mminit_dprintk(MMINIT_TRACE, "memmap_init",
 			"Initialising map node %d zone %lu pfns %lu -> %lu\n",
 			pgdat->node_id,
@@ -6952,6 +7267,7 @@ void __meminit init_currently_empty_zone(struct zone *zone,
 
 	zone_init_free_lists(zone);
 	zone->initialized = 1;
+#endif
 }
 
 /**
@@ -7859,7 +8175,12 @@ static void check_for_memory(pg_data_t *pgdat, int nid)
 		if (populated_zone(zone)) {
 			if (IS_ENABLED(CONFIG_HIGHMEM))
 				node_set_state(nid, N_HIGH_MEMORY);
+			#ifdef CONFIG_ADD_ZONE
+			//basic config
+			if (zone_type <= ZONE_CUSTOM)
+			#else
 			if (zone_type <= ZONE_NORMAL)
+			#endif
 				node_set_state(nid, N_NORMAL_MEMORY);
 			break;
 		}
@@ -7961,6 +8282,17 @@ void __init free_area_init(unsigned long *max_zone_pfn)
 		subsection_map_init(start_pfn, end_pfn - start_pfn);
 	}
 
+#ifdef CONFIG_ADD_ZONE
+{
+//This mechanism preserves the entire ZONE_CUSTOM memory region, preventing allocation by other situation
+	unsigned long start_pfn = max_zone_pfn[ZONE_NORMAL];
+    unsigned long end_pfn = max_zone_pfn[ZONE_CUSTOM];
+    phys_addr_t start = start_pfn << PAGE_SHIFT;
+    phys_addr_t size = (end_pfn - start_pfn) << PAGE_SHIFT;
+
+    memblock_reserve(start, size);
+}
+#endif
 	/* Initialise every node */
 	mminit_verify_pageflags_layout();
 	setup_nr_node_ids();
@@ -9435,3 +9767,95 @@ bool has_managed_dma(void)
 	return false;
 }
 #endif /* CONFIG_ZONE_DMA */
+
+#ifdef CONFIG_ADD_ZONE
+//Handles read/write operations when user and kernel buffers reside in different subarrays
+int remap_user_page(struct iov_iter *iter, unsigned long uaddr, unsigned long pfn)
+{
+    struct page *kernel_page, *free_page, *old_user_page;
+    struct zone *zone;
+    struct subarray *sa;
+    struct vm_area_struct *vma;
+    pte_t *pte, old_pte, new_pte;
+    spinlock_t *ptl;
+    unsigned long user_pfn, free_pfn;
+    pgprot_t prot;
+    int subarray_idx;
+
+    kernel_page = pfn_to_page(pfn);
+    if (unlikely(!kernel_page))
+        return -EINVAL;
+
+    zone = page_zone(kernel_page);
+    if (unlikely(strcmp(zone->name, "Custom") != 0))
+        return -EINVAL;
+
+    if (unlikely(pfn < zone->zone_start_pfn)) {
+        pr_err("PFN %lu < zone start %lu\n", pfn, zone->zone_start_pfn);
+        return -EINVAL;
+    }
+    subarray_idx = (pfn - zone->zone_start_pfn) / 512;
+    if (unlikely(subarray_idx >= zone->num_subarrays)) {
+        pr_err("subarray_idx=%d exceed max=%d\n", subarray_idx, zone->num_subarrays);
+        return -EINVAL;
+    }
+    sa = &zone->subarrays[subarray_idx];
+
+    spin_lock(&sa->lock);
+    if (unlikely(sa->count <= 0)) {
+        spin_unlock(&sa->lock);
+        return -ENOENT;
+    }
+    spin_unlock(&sa->lock);
+
+    pte = get_locked_pte(current->mm, uaddr, &ptl);
+    if (unlikely(!pte)) {
+        pr_debug("No PTE for 0x%lx\n", uaddr);
+        return -EFAULT;
+    }
+
+    old_pte = *pte;
+    if (unlikely(!pte_present(old_pte))) {
+        spin_unlock(ptl);
+        pr_debug("PTE not present\n");
+        return -EFAULT;
+    }
+    user_pfn = pte_pfn(old_pte);
+
+    spin_lock(&sa->lock);
+    if (unlikely(sa->count == 0)) {
+        spin_unlock(&sa->lock);
+        spin_unlock(ptl);
+        return -ENOENT;
+    }
+
+    free_page = sa->free_pages;
+	sa->free_pages = free_page->next;
+    free_pfn = page_to_pfn(free_page);
+
+    prot = __pgprot(pte_val(old_pte) & (PTE_VALID | PTE_WRITE | PTE_USER));
+    new_pte = pfn_pte(free_pfn, prot);
+
+    set_pte_at(current->mm, uaddr, pte, new_pte);
+
+    vma = find_vma(current->mm, uaddr);
+    if (unlikely(!vma)) {
+        spin_unlock(ptl);
+        spin_unlock(&sa->lock);
+        pr_err("No VMA for 0x%lx\n", uaddr);
+        return -EFAULT;
+    }
+    flush_tlb_page(vma, uaddr);
+
+    sa->count--;
+
+    old_user_page = pfn_to_page(user_pfn);
+    sa->count++;
+
+    spin_unlock(&sa->lock);
+    spin_unlock(ptl);
+	printk(KERN_INFO "[add_zone]remap user succ: N=%s\n", current->comm);
+    return 0;
+}
+
+#endif

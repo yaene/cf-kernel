@@ -43,7 +43,8 @@
 #include <linux/sizes.h>
 #include <asm/tlb.h>
 #include <asm/alternative.h>
-
+#include <linux/mmzone.h>
+#include <linux/pageblock-flags.h>
 /*
  * We need to be able to catch inadvertent references to memstart_addr
  * that occur (potentially in generic code) before arm64_memblock_init()
@@ -52,7 +53,10 @@
  */
 s64 memstart_addr __ro_after_init = -1;
 EXPORT_SYMBOL(memstart_addr);
-
+#ifdef CONFIG_ADD_ZONE
+unsigned long custom_zone_start_pfn = 0;
+EXPORT_SYMBOL(custom_zone_start_pfn);
+#endif
 /*
  * If the corresponding config options are enabled, we create both ZONE_DMA
  * and ZONE_DMA32. By default ZONE_DMA covers the 32-bit addressable memory
@@ -243,7 +247,18 @@ static void __init zone_sizes_init(unsigned long min, unsigned long max)
 	if (!arm64_dma_phys_limit)
 		arm64_dma_phys_limit = dma32_phys_limit;
 #endif
+#ifdef CONFIG_ADD_ZONE
+/* 
+ * ZONE_CUSTOM parameters:
+ * - Size defined by CUSTOM_ZONE_PAGES 
+ * - Boundary set via max_zone_pfns[]
+ */
+	max_zone_pfns[ZONE_NORMAL] = max - CUSTOM_ZONE_PAGES;
+	custom_zone_start_pfn = max - CUSTOM_ZONE_PAGES;
+	max_zone_pfns[ZONE_CUSTOM] = max;
+#else
 	max_zone_pfns[ZONE_NORMAL] = max;
+#endif
 
 	free_area_init(max_zone_pfns);
 }
