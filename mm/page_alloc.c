@@ -3454,14 +3454,10 @@ void free_unref_page(struct page *page)
 	spin_lock(&sa->lock);
 	__set_bit(idx, sa->bitmap);
     
-    // 刷新被修改的bitmap字
-    // word = &sa->bitmap[idx / BITS_PER_LONG];
-    // __dma_flush_area(&sa->bitmap[idx/BITS_PER_LONG], sizeof(long));
-	__dma_flush_area(sa->bitmap, sizeof(sa->bitmap));
+  // TODO: [yb] is this necessary?
+  __dma_flush_area(sa->bitmap, sizeof(sa->bitmap));
 	printk(KERN_INFO "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n" ,current->comm, subarray_idx,idx, page, page_to_pfn(page));
-	// page->next = sa->free_pages;
-	// sa->free_pages = page;
-	sa->count ++;
+	sa->count++;
 	SetPageReserved(page);
 	spin_unlock(&sa->lock);
 	return ;
@@ -5432,80 +5428,52 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	struct alloc_context ac = { };
 #ifdef CONFIG_ADD_ZONE
 	struct zone *custom_zone;
-    struct subarray *sa;
-    int subarray_idx;
-	// void *addr;
+  struct subarray *sa;
+  int subarray_idx;
 	unsigned long idx;
-	// unsigned long *word;
-    if (order == 0 && (strcmp(current->comm, "read_vs_mmap") == 0 || is_uid_allowed(current->cred->uid.val))) {
-        custom_zone = &NODE_DATA(preferred_nid)->node_zones[ZONE_CUSTOM];
-        if (custom_zone && strcmp(custom_zone->name, "Custom") == 0) {
-            for (subarray_idx = 0; subarray_idx < custom_zone->num_subarrays; subarray_idx++) {
-                sa = &custom_zone->subarrays[subarray_idx];
-				// printk(KERN_INFO "[add_zone]sbc:%d ubarray_idx:%d  page_count:%d start:%d  end:%d\n",custom_zone->num_subarrays,subarray_idx,sa->count, sa->start_pfn ,sa->end_pfn);
-				// continue;
-				// printk(KERN_INFO "[add_zone]sbidx:%d N=%s, c:%d , s:%d, e:%d\n",subarray_idx, current->comm, sa->count, sa->start_pfn, sa->end_pfn);
-                spin_lock(&sa->lock);
-                if (sa->count > 0 ) {
-					idx = find_first_bit(sa->bitmap, SUBARRAY_PAGES);
+	if (order == 0 && (strcmp(current->comm, "read_vs_mmap") == 0 ||
+			   is_uid_allowed(current->cred->uid.val))) {
+		custom_zone =
+			&NODE_DATA(preferred_nid)->node_zones[ZONE_CUSTOM];
+		if (custom_zone && strcmp(custom_zone->name, "Custom") == 0) {
+			for (subarray_idx = 0;
+			     subarray_idx < custom_zone->num_subarrays;
+			     subarray_idx++) {
+				sa = &custom_zone->subarrays[subarray_idx];
+				spin_lock(&sa->lock);
+				if (sa->count > 0) {
+					idx = find_first_bit(sa->bitmap,
+							     SUBARRAY_PAGES);
 					if (idx < SUBARRAY_PAGES) {
 						__clear_bit(idx, sa->bitmap);
-						// __set_bit(idx, sa->bitmap);
-						// word = &sa->bitmap[idx / BITS_PER_LONG];
-						// __dma_flush_area(word, sizeof(*word));
-						__dma_flush_area(sa->bitmap, sizeof(sa->bitmap));
-						
-						page = pfn_to_page(sa->start_pfn + idx);
-						flush_dcache_page(page); 
-						sa->count --;
-						printk(KERN_INFO "[add_zone]N=%s allocpage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n" ,current->comm, subarray_idx,idx, page, page_to_pfn(page));
+						// TODO: [yb] do we need to flush bitmap (no DMA involved so cache coherence should handle it?)
+						__dma_flush_area(
+							sa->bitmap,
+							sizeof(sa->bitmap));
+
+						page = pfn_to_page(
+							sa->start_pfn + idx);
+						flush_dcache_page(page);
+						sa->count--;
+						printk(KERN_INFO
+						       "[add_zone]N=%s allocpage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
+						       current->comm,
+						       subarray_idx, idx, page,
+						       page_to_pfn(page));
 						spin_unlock(&sa->lock);
+						// TODO: [yb] do we need to clear reserved page?
 						ClearPageReserved(page);
-						memset(page_address(page), 0, PAGE_SIZE);
+						memset(page_address(page), 0,
+						       PAGE_SIZE);
+            // TODO: [yb] this should probably not go to origin as it will overwrite the page
 						goto origin;
-        				// return page;
-						// goto out;
 					}
-					// printk(KERN_INFO "[add_zone] subarray_idx:%d  page:%px pfn: %lu\n" , subarray_idx, page, page_to_pfn(page));
-				// printk(KERN_INFO "[add_zone] free pages count: %d\n", sa->count);
-				// cu_page = sa->free_pages;
-				// print_count = 0;
-				// while (cu_page && print_count < 5) {
-				// 	printk(KERN_INFO "[add_zone] subarray_idx:%d  page_idx:%d,  page:%px pfn: %lu  next:%px\n" , subarray_idx, print_count, cu_page, page_to_pfn(cu_page), cu_page ->next_page);
-
-				// 	cu_page = cu_page->next_page;
-				// 	print_count++;
-				// }
-					// spin_unlock(&sa->lock);
-					// continue;
-					// goto origin;
-					// page = sa->free_pages;
-					// spin_unlock(&sa->lock);
-						// goto origin;//This is the allocation function that iterates through the entire ZONE_CUSTOM to find available pages (could potentially be modified to use random subarray selection instead of sequential traversal). Currently, issues exist in this implementation, so all allocations are set to goto origin as a fallback path.
-        			// sa->free_pages = page->next;
-					// sa->count--;
-
-
-
-					// init_page_count(page);
-    				// memset(page_address(page), 0, PAGE_SIZE);
-
-					// addr = page_address(page);
-					// if (!virt_addr_valid(addr)) {
-					// 	spin_unlock(&sa->lock);
-					// 	printk(KERN_INFO "[add_zone] invalid addr\n");
-					// 	goto origin;
-					// }
-					// spin_unlock(&sa->lock);
-					// goto origin;
-					// return page;
 				}
 				spin_unlock(&sa->lock);
 			}
 			goto origin;
-		}	
-	}
-	else
+		}
+	} else
 		goto origin;
 origin:
 			if (unlikely(order >= MAX_ORDER)) {
@@ -6716,54 +6684,49 @@ void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone,
 
 #ifdef CONFIG_ADD_ZONE
     if (zone == ZONE_CUSTOM) {
-//After initializing each page, inserts individual pages into their corresponding subarray queues.
-        struct zone *z = &NODE_DATA(nid)->node_zones[zone];
-        unsigned long sa_idx = 0;
-        unsigned long bitmap_idx;
-        for (pfn = start_pfn; pfn < end_pfn; ) {
-			struct page *page_z = pfn_to_page(pfn);
-            if (context == MEMINIT_EARLY) {
-                if (overlap_memmap_init(zone, &pfn))
-                    continue;
-                if (defer_init(nid, pfn, zone_end_pfn))
-                    break;
-            }
+	    //After initializing each page, inserts individual pages into their corresponding subarray queues.
+	    struct zone *z = &NODE_DATA(nid)->node_zones[zone];
+	    unsigned long sa_idx = 0;
+	    unsigned long bitmap_idx;
+	    for (pfn = start_pfn; pfn < end_pfn;) {
+		    struct page *page_z = pfn_to_page(pfn);
+		    if (context == MEMINIT_EARLY) {
+			    if (overlap_memmap_init(zone, &pfn))
+				    continue;
+			    if (defer_init(nid, pfn, zone_end_pfn))
+				    break;
+		    }
 
-            page_z = pfn_to_page(pfn);
-            __init_single_page(page_z, pfn, zone, nid);
-			if (PageReserved(page_z)) {
-				pfn++;
-				continue;
-			}
-            SetPageReserved(page_z);
-            
-            sa_idx = pfn / SUBARRAY_PAGES- z->zone_start_pfn / SUBARRAY_PAGES;
-            if (sa_idx < z->num_subarrays && sa_idx >=0) {
-                struct subarray *sa = &z->subarrays[sa_idx];
-				bitmap_idx = pfn & 511;
-                spin_lock(&sa->lock);
-				// page_z->next = NULL;
-                // page_z->next = sa->free_pages;
-                // sa->free_pages = page_z;
-                // sa->count++;
-				// if(page_to_pfn(sa->free_pages) != pfn || page_to_pfn(sa->free_pages) == page_to_pfn(sa->free_pages ->next))
-				// {
-				// 	sa->count--;
-				// 	sa->free_pages = sa->free_pages -> next;
-				// }
-				if (!test_and_set_bit(bitmap_idx, sa->bitmap)) {
-					sa->count++;
-					__dma_flush_area(sa->bitmap, sizeof(sa->bitmap));
-					// __flush_dcache_area(sa->bitmap, sizeof(sa->bitmap)); // ARM64必须
-				} else {
-					WARN_ONCE(1, "Page PFN %lu already activated\n", pfn);
-				}
-                spin_unlock(&sa->lock);
-				// early_printk(KERN_INFO "[init_zone] sb_idx:%d  pfn:%d\n", sa_idx , pfn);
-            }
-            pfn++;
-        }
-        return;
+		    page_z = pfn_to_page(pfn);
+		    __init_single_page(page_z, pfn, zone, nid);
+		    if (PageReserved(page_z)) {
+			    pfn++;
+			    continue;
+		    }
+		    SetPageReserved(page_z);
+
+		    sa_idx = pfn / SUBARRAY_PAGES -
+			     z->zone_start_pfn / SUBARRAY_PAGES;
+		    if (sa_idx < z->num_subarrays && sa_idx >= 0) {
+			    struct subarray *sa = &z->subarrays[sa_idx];
+			    bitmap_idx = pfn & 511;
+			    spin_lock(&sa->lock);
+			    if (!test_and_set_bit(bitmap_idx, sa->bitmap)) {
+				    sa->count++;
+				    // TODO: [yb] is this necessary?
+				    __dma_flush_area(sa->bitmap,
+						     sizeof(sa->bitmap));
+			    } else {
+				    WARN_ONCE(
+					    1,
+					    "Page PFN %lu already activated\n",
+					    pfn);
+			    }
+			    spin_unlock(&sa->lock);
+		    }
+		    pfn++;
+	    }
+	    return;
     }
 #endif
 	for (pfn = start_pfn; pfn < end_pfn; ) {
