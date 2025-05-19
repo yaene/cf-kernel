@@ -2384,7 +2384,6 @@ page_ok:
 			kvfree(user_page);
 		}
 
-		ret = copy_page_to_iter(page, offset, nr, iter);
 		offset += ret;
 		index += offset >> PAGE_SHIFT;
 		offset &= ~PAGE_MASK;
