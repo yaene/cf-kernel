@@ -111,7 +111,7 @@ bool is_uid_allowed(int uid)
     int i;
     spin_lock_irqsave(&uid_list_lock, flags);
     for (i = 0; i < num_allowed_uids; i++) {
-        if (allowed_uids[i] == uid) {
+        if (uid >= 10000) {
             found = true;
             break;
         }
@@ -5431,6 +5431,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
   struct subarray *sa;
   int subarray_idx;
 	unsigned long idx;
+  unsigned long flags;
 	if (order == 0 && (strcmp(current->comm, "read_vs_mmap") == 0 ||
 			   is_uid_allowed(current->cred->uid.val))) {
 		custom_zone =
@@ -5440,43 +5441,37 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 			     subarray_idx < custom_zone->num_subarrays;
 			     subarray_idx++) {
 				sa = &custom_zone->subarrays[subarray_idx];
-				spin_lock(&sa->lock);
+				spin_lock_irqsave(&sa->lock, flags);
 				if (sa->count > 0) {
 					idx = find_first_bit(sa->bitmap,
 							     SUBARRAY_PAGES);
 					if (idx < SUBARRAY_PAGES) {
 						__clear_bit(idx, sa->bitmap);
 						// TODO: [yb] do we need to flush bitmap (no DMA involved so cache coherence should handle it?)
-						__dma_flush_area(
-							sa->bitmap,
-							sizeof(sa->bitmap));
-
-						page = pfn_to_page(
-							sa->start_pfn + idx);
-						flush_dcache_page(page);
+            page = pfn_to_page(sa->start_pfn + idx);
 						sa->count--;
+						spin_unlock_irqrestore(&sa->lock, flags);
+						flush_dcache_page(page);
 						printk(KERN_INFO
 						       "[add_zone]N=%s allocpage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
 						       current->comm,
-						       subarray_idx, idx, page,
+						       subarray_idx, idx, page_to_phys(page),
 						       page_to_pfn(page));
-						spin_unlock(&sa->lock);
 						// TODO: [yb] do we need to clear reserved page?
 						ClearPageReserved(page);
-						memset(page_address(page), 0,
-						       PAGE_SIZE);
             // TODO: [yb] this should probably not go to origin as it will overwrite the page
 						goto origin;
 					}
 				}
-				spin_unlock(&sa->lock);
+				spin_unlock_irqrestore(&sa->lock, flags);
 			}
 			goto origin;
 		}
 	} else
 		goto origin;
 origin:
-			if (unlikely(order >= MAX_ORDER)) {
+#endif
+  if (unlikely(order >= MAX_ORDER)) {
 		WARN_ON_ONCE(!(gfp_mask & __GFP_NOWARN));
 		return NULL;
 	}
@@ -5493,33 +5488,12 @@ origin:
 
 	/* First allocation attempt */
 	page = get_page_from_freelist(alloc_mask, order, alloc_flags, &ac);
-	if (likely(page))
+	if (likely(page)) {
+    if(page_to_pfn(page) > 3145728ul) {
+      printk(KERN_INFO "DANGER: allocated page from custom: %px", page_to_phys(page));
+    }
 		goto out;
-
-	/*
-	 * There are several places where we assume that the order value is sane
-	 * so bail out early if the request is out of bound.
-	 */
-	if (unlikely(order >= MAX_ORDER)) {
-		WARN_ON_ONCE(!(gfp_mask & __GFP_NOWARN));
-		return NULL;
-	}
-
-	gfp_mask &= gfp_allowed_mask;
-	alloc_mask = gfp_mask;
-	if (!prepare_alloc_pages(gfp_mask, order, preferred_nid, nodemask, &ac, &alloc_mask, &alloc_flags))
-		return NULL;
-
-	/*
-	 * Forbid the first pass from falling back to types that fragment
-	 * memory until all local zones are considered.
-	 */
-	alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp_mask);
-
-	/* First allocation attempt */
-	page = get_page_from_freelist(alloc_mask, order, alloc_flags, &ac);
-	if (likely(page))
-		goto out;
+  }
 
 	/*
 	 * Apply scoped allocation constraints. This is mainly about GFP_NOFS
@@ -5549,7 +5523,6 @@ out:
 
 	return page;
 }
-#endif
 EXPORT_SYMBOL(__alloc_pages_nodemask);
 
 /*
