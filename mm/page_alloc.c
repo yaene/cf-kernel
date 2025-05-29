@@ -5447,13 +5447,13 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
             page = pfn_to_page(sa->start_pfn + idx);
 						sa->count--;
 						spin_unlock_irqrestore(&sa->lock, flags);
-						flush_dcache_page(page);
 						printk(KERN_INFO
 						       "[add_zone]N=%s allocpage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
 						       current->comm,
 						       subarray_idx, idx, page_to_phys(page),
 						       page_to_pfn(page));
 						ClearPageReserved(page);
+            post_alloc_hook(page, 0, gfp_mask);
             return page;
 					}
 				}
