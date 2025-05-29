@@ -3427,6 +3427,35 @@ static bool free_unref_page_commit(struct page *page, int migratetype,
 	return true;
 }
 
+#ifdef CONFIG_ADD_ZONE
+void free_custom_page(struct page *page)
+{
+	// Specialized function for freeing order-0 pages
+	unsigned long pfn = page_to_pfn(page);
+	unsigned long flags;
+	struct zone *zone = page_zone(page);
+	struct subarray *sa;
+	unsigned int subarray_idx;
+	unsigned long idx;
+	// compute which subarray
+	subarray_idx = (pfn / 512) - (zone->zone_start_pfn / 512);
+	sa = &zone->subarrays[subarray_idx];
+	idx = pfn & 511;
+	spin_lock_irqsave(&sa->lock, flags);
+	__set_bit(idx, sa->bitmap);
+	sa->count++;
+	spin_unlock_irqrestore(&sa->lock, flags);
+
+	printk(KERN_INFO
+	       "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
+	       current->comm, subarray_idx, idx, page_to_phys(page),
+	       page_to_pfn(page));
+	SetPageReserved(page);
+	return;
+}
+#endif
+
+
 /*
  * Free a 0-order page
  */
@@ -3437,26 +3466,12 @@ void free_unref_page(struct page *page)
 	int migratetype;
 	bool freed_pcp = false;
 #ifdef CONFIG_ADD_ZONE
-// Specialized function for freeing order-0 pages
-// If page belongs to ZONE_CUSTOM, returns the page to subarray
-	struct subarray *sa;
-	unsigned int subarray_idx;
-	unsigned long idx;
+  // If page belongs to ZONE_CUSTOM, returns the page to subarray
 	struct zone *zone;
 	zone = page_zone(page);
-	if (strcmp(zone->name,"Custom")!=0)
+	if (strcmp(zone->name, "Custom") != 0)
 		goto origin;
-	// compute which subarray
-	subarray_idx = (pfn / 512) - (zone->zone_start_pfn / 512);
-	sa = &zone->subarrays[subarray_idx];
-	idx = pfn & 511;
-	spin_lock_irqsave(&sa->lock, flags);
-	__set_bit(idx, sa->bitmap);
-	sa->count++;
-	spin_unlock_irqrestore(&sa->lock, flags);
-
-	printk(KERN_INFO "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n" ,current->comm, subarray_idx,idx, page_to_phys(page), page_to_pfn(page));
-	SetPageReserved(page);
+	free_custom_page(page);
 	return;
 origin:
 	if (!free_unref_page_prepare(page, pfn))
@@ -3540,10 +3555,26 @@ void free_unref_page_list(struct list_head *list)
 	/* Prepare pages for freeing */
 	list_for_each_entry_safe(page, next, list, lru) {
 		unsigned long pfn = page_to_pfn(page);
+#ifdef CONFIG_ADD_ZONE
+		struct zone *zone = page_zone(page);
+#endif
 		if (!free_unref_page_prepare(page, pfn)) {
 			list_del(&page->lru);
 			continue;
 		}
+
+#ifdef CONFIG_ADD_ZONE
+		/*
+     * Free custom zone pages directly without going through buddy
+     */
+
+		if (strcmp(zone->name, "Custom") == 0) {
+			list_del(&page->lru);
+			free_custom_page(page);
+			continue;
+		}
+
+#endif
 
 		/*
 		 * Free isolated pages directly to the allocator, see
