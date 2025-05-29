@@ -5447,7 +5447,6 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 							     SUBARRAY_PAGES);
 					if (idx < SUBARRAY_PAGES) {
 						__clear_bit(idx, sa->bitmap);
-						// TODO: [yb] do we need to flush bitmap (no DMA involved so cache coherence should handle it?)
             page = pfn_to_page(sa->start_pfn + idx);
 						sa->count--;
 						spin_unlock_irqrestore(&sa->lock, flags);
@@ -5457,10 +5456,8 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 						       current->comm,
 						       subarray_idx, idx, page_to_phys(page),
 						       page_to_pfn(page));
-						// TODO: [yb] do we need to clear reserved page?
 						ClearPageReserved(page);
-            // TODO: [yb] this should probably not go to origin as it will overwrite the page
-						goto origin;
+            return page;
 					}
 				}
 				spin_unlock_irqrestore(&sa->lock, flags);
