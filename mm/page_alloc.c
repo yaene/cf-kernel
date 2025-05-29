@@ -3437,30 +3437,27 @@ void free_unref_page(struct page *page)
 	int migratetype;
 	bool freed_pcp = false;
 #ifdef CONFIG_ADD_ZONE
-//Specialized function for freeing order-0 pages
-//If page belongs to ZONE_CUSTOM, returns the page to subarray
+// Specialized function for freeing order-0 pages
+// If page belongs to ZONE_CUSTOM, returns the page to subarray
 	struct subarray *sa;
 	unsigned int subarray_idx;
 	unsigned long idx;
 	struct zone *zone;
-	// unsigned long *word;
 	zone = page_zone(page);
 	if (strcmp(zone->name,"Custom")!=0)
 		goto origin;
-	//computer which subarray
+	// compute which subarray
 	subarray_idx = (pfn / 512) - (zone->zone_start_pfn / 512);
 	sa = &zone->subarrays[subarray_idx];
 	idx = pfn & 511;
-	spin_lock(&sa->lock);
+	spin_lock_irqsave(&sa->lock, flags);
 	__set_bit(idx, sa->bitmap);
-    
-  // TODO: [yb] is this necessary?
-  __dma_flush_area(sa->bitmap, sizeof(sa->bitmap));
-	printk(KERN_INFO "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n" ,current->comm, subarray_idx,idx, page, page_to_pfn(page));
 	sa->count++;
+	spin_unlock_irqrestore(&sa->lock, flags);
+
+	printk(KERN_INFO "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n" ,current->comm, subarray_idx,idx, page_to_phys(page), page_to_pfn(page));
 	SetPageReserved(page);
-	spin_unlock(&sa->lock);
-	return ;
+	return;
 origin:
 	if (!free_unref_page_prepare(page, pfn))
 		return;
