@@ -9773,8 +9773,10 @@ int remap_user_page(struct iov_iter *iter, unsigned long origin_addr, unsigned l
     if (unlikely(!new_page))
         return -ENOMEM;
 
+    // TODO: [yb] kmap atomic likely not necessary (no highmem)
     src = kmap_atomic(old_page);
     dst = kmap_atomic(new_page);
+    // TODO: [yb] memcpy not needed for reads
     memcpy(dst, src, PAGE_SIZE);
     kunmap_atomic(dst);
     kunmap_atomic(src);
@@ -9783,6 +9785,7 @@ int remap_user_page(struct iov_iter *iter, unsigned long origin_addr, unsigned l
     if (!mm)
         return -EINVAL;
 
+    // TODO: [yb] calculation looks peculiar?
     vaddr = (unsigned long)iter->iov->iov_base + (origin_addr - (unsigned long)iter->iov->iov_base);
 
     mmap_read_lock(mm);
@@ -9792,6 +9795,7 @@ int remap_user_page(struct iov_iter *iter, unsigned long origin_addr, unsigned l
         return -EFAULT;
     }
 
+    // TODO: [yb] this seems to return if address is already mapped - unmap previous first
     ret = vm_insert_page(vma, vaddr, new_page);
     mmap_read_unlock(mm);
 
@@ -9800,6 +9804,7 @@ int remap_user_page(struct iov_iter *iter, unsigned long origin_addr, unsigned l
         return ret;
     }
 
+    // TODO: [yb] check: vm_insert_page potentially flushes tlb internally
     flush_tlb_page(vma, vaddr);
 
     return 0;
