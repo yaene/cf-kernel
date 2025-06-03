@@ -9731,91 +9731,77 @@ bool has_managed_dma(void)
 
 #ifdef CONFIG_ADD_ZONE
 //Handles read/write operations when user and kernel buffers reside in different subarrays
-int remap_user_page(struct iov_iter *iter, unsigned long uaddr, unsigned long pfn)
+int remap_user_page(struct iov_iter *iter, unsigned long origin_addr, unsigned long pfn)
 {
-    struct page *kernel_page, *free_page, *old_user_page;
-    struct zone *zone;
+    struct page *old_page, *new_page;
+    void *src, *dst;
+    unsigned long flags;
     struct subarray *sa;
+    struct zone *custom_zone;
+    int subarray_idx, idx;
+    int ret = 0;
+    struct mm_struct *mm;
+    unsigned long vaddr;
     struct vm_area_struct *vma;
-    pte_t *pte, old_pte, new_pte;
-    spinlock_t *ptl;
-    unsigned long user_pfn, free_pfn;
-    pgprot_t prot;
-    int subarray_idx;
-
-    kernel_page = pfn_to_page(pfn);
-    if (unlikely(!kernel_page))
+    old_page = pfn_to_page(origin_addr >> PAGE_SHIFT);
+    if (!old_page)
         return -EINVAL;
 
-    zone = page_zone(kernel_page);
-    if (unlikely(strcmp(zone->name, "Custom") != 0))
-        return -EINVAL;
+    custom_zone = &NODE_DATA(0)->node_zones[ZONE_CUSTOM];
+    subarray_idx = pfn / SUBARRAY_PAGES - custom_zone->zone_start_pfn / SUBARRAY_PAGES;
+    sa = &custom_zone->subarrays[subarray_idx];
 
-    if (unlikely(pfn < zone->zone_start_pfn)) {
-        pr_err("PFN %lu < zone start %lu\n", pfn, zone->zone_start_pfn);
-        return -EINVAL;
+    spin_lock_irqsave(&sa->lock, flags);
+    if (sa->count > 0) {
+        idx = find_first_bit(sa->bitmap, SUBARRAY_PAGES);
+        if (idx < SUBARRAY_PAGES) {
+            __clear_bit(idx, sa->bitmap);
+            new_page = pfn_to_page(sa->start_pfn + idx);
+            sa->count--;
+            spin_unlock_irqrestore(&sa->lock, flags);
+            ClearPageReserved(new_page);
+            post_alloc_hook(new_page, 0, GFP_KERNEL);
+        } else {
+            spin_unlock_irqrestore(&sa->lock, flags);
+            return -ENOMEM;
+        }
+    } else {
+        spin_unlock_irqrestore(&sa->lock, flags);
+        return -ENOMEM;
     }
-    subarray_idx = (pfn - zone->zone_start_pfn) / 512;
-    if (unlikely(subarray_idx >= zone->num_subarrays)) {
-        pr_err("subarray_idx=%d exceed max=%d\n", subarray_idx, zone->num_subarrays);
+
+    if (unlikely(!new_page))
+        return -ENOMEM;
+
+    src = kmap_atomic(old_page);
+    dst = kmap_atomic(new_page);
+    memcpy(dst, src, PAGE_SIZE);
+    kunmap_atomic(dst);
+    kunmap_atomic(src);
+
+    mm = current->mm;
+    if (!mm)
         return -EINVAL;
-    }
-    sa = &zone->subarrays[subarray_idx];
 
-    spin_lock(&sa->lock);
-    if (unlikely(sa->count <= 0)) {
-        spin_unlock(&sa->lock);
-        return -ENOENT;
-    }
-    spin_unlock(&sa->lock);
+    vaddr = (unsigned long)iter->iov->iov_base + (origin_addr - (unsigned long)iter->iov->iov_base);
 
-    pte = get_locked_pte(current->mm, uaddr, &ptl);
-    if (unlikely(!pte)) {
-        pr_debug("No PTE for 0x%lx\n", uaddr);
+    mmap_read_lock(mm);
+    vma = find_vma(mm, vaddr);
+    if (!vma || vma->vm_start > vaddr) {
+        mmap_read_unlock(mm);
         return -EFAULT;
     }
 
-    old_pte = *pte;
-    if (unlikely(!pte_present(old_pte))) {
-        spin_unlock(ptl);
-        pr_debug("PTE not present\n");
-        return -EFAULT;
-    }
-    user_pfn = pte_pfn(old_pte);
+    ret = vm_insert_page(vma, vaddr, new_page);
+    mmap_read_unlock(mm);
 
-    spin_lock(&sa->lock);
-    if (unlikely(sa->count == 0)) {
-        spin_unlock(&sa->lock);
-        spin_unlock(ptl);
-        return -ENOENT;
+    if (ret) {
+        __free_page(new_page);
+        return ret;
     }
 
-    free_page = sa->free_pages;
-	sa->free_pages = free_page->next;
-    free_pfn = page_to_pfn(free_page);
+    flush_tlb_page(vma, vaddr);
 
-    prot = __pgprot(pte_val(old_pte) & (PTE_VALID | PTE_WRITE | PTE_USER));
-    new_pte = pfn_pte(free_pfn, prot);
-
-    set_pte_at(current->mm, uaddr, pte, new_pte);
-
-    vma = find_vma(current->mm, uaddr);
-    if (unlikely(!vma)) {
-        spin_unlock(ptl);
-        spin_unlock(&sa->lock);
-        pr_err("No VMA for 0x%lx\n", uaddr);
-        return -EFAULT;
-    }
-    flush_tlb_page(vma, uaddr);
-
-    sa->count--;
-
-    old_user_page = pfn_to_page(user_pfn);
-    sa->count++;
-
-    spin_unlock(&sa->lock);
-    spin_unlock(ptl);
-	printk(KERN_INFO "[add_zone]remap user succ: N=%s\n", current->comm);
     return 0;
 }
 

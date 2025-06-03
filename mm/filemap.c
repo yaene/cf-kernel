@@ -2351,7 +2351,7 @@ page_ok:
 		 * Ok, we have the page, and it's up-to-date, so
 		 * now we can copy it to user space...
 		 */
-		{
+		if(is_uid_allowed(current->cred->uid.val)){
 			phys_addr_t kernel_phys_addr;
 			phys_addr_t user_phys_addr;
 			unsigned long user_virt_addr;
@@ -2363,7 +2363,6 @@ page_ok:
 			user_page = kvcalloc(1, sizeof(void *), GFP_KERNEL);
 			kernel_phys_addr = page_to_phys(page) + offset;
 
-			ret = copy_page_to_iter(page, offset, nr, iter);
 
 			if (current->mm && current->mm->mmap) {
 				npages = get_user_pages_fast(user_virt_addr, 1,
@@ -2371,9 +2370,11 @@ page_ok:
 			}
 			if (npages > 0) {
 				user_phys_addr = page_to_phys(user_page[0]);
+        //printk(KERN_INFO "[add_zone]before remap: N=%s, k:%pa   u:%pa  iovof:%d\n", current->comm, &kernel_phys_addr,  &user_phys_addr, (int)iter->iov_offset);
+				//remap_user_page(iter, user_phys_addr, kernel_phys_addr >> PAGE_SHIFT);
 				printk(KERN_EMERG
 				       "[test_mobile] N=%s,r,%d,%lld,0x%016llx,0x%016llx,0x%016llx,0x%016llx\n",
-				       current->comm, current->cpu, ret,
+				       current->comm, current->cpu, nr,
 				       page_to_virt(page), kernel_phys_addr,
 				       user_virt_addr,
 				       user_phys_addr +
@@ -2383,6 +2384,8 @@ page_ok:
 
 			kvfree(user_page);
 		}
+
+    ret = copy_page_to_iter(page, offset, nr, iter);
 
 		offset += ret;
 		index += offset >> PAGE_SHIFT;
