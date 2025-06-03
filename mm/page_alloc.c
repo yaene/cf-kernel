@@ -5443,18 +5443,8 @@ static inline bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
 	return true;
 }
 
-/*
- * This is the 'heart' of the zoned buddy allocator.
- */
-struct page *
-__alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
-							nodemask_t *nodemask)
-{
-	struct page *page;
-	unsigned int alloc_flags = ALLOC_WMARK_LOW;
-	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
-	struct alloc_context ac = { };
 #ifdef CONFIG_ADD_ZONE
+struct page* alloc_custom_page(unsigned int order, int preferred_nid) { 
 	struct zone *custom_zone;
   struct subarray *sa;
   int subarray_idx;
@@ -5462,7 +5452,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
   unsigned long flags;
 	if (order == 0 && (strcmp(current->comm, "read_vs_mmap") == 0 ||
 			   is_uid_allowed(current->cred->uid.val))) {
-		custom_zone =
+	custom_zone =
 			&NODE_DATA(preferred_nid)->node_zones[ZONE_CUSTOM];
 		if (custom_zone && strcmp(custom_zone->name, "Custom") == 0) {
 			for (subarray_idx = 0;
@@ -5490,11 +5480,28 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 				}
 				spin_unlock_irqrestore(&sa->lock, flags);
 			}
-			goto origin;
 		}
-	} else
-		goto origin;
-origin:
+	} 
+  return NULL;
+}
+#endif
+
+/*
+ * This is the 'heart' of the zoned buddy allocator.
+ */
+struct page *
+__alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
+							nodemask_t *nodemask)
+{
+	struct page *page;
+	unsigned int alloc_flags = ALLOC_WMARK_LOW;
+	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
+	struct alloc_context ac = { };
+#ifdef CONFIG_ADD_ZONE
+	page = alloc_custom_page(order, preferred_nid);
+	if (page) {
+		return page;
+	}
 #endif
   if (unlikely(order >= MAX_ORDER)) {
 		WARN_ON_ONCE(!(gfp_mask & __GFP_NOWARN));
@@ -9735,10 +9742,7 @@ int remap_user_page(struct iov_iter *iter, unsigned long origin_addr, unsigned l
 {
     struct page *old_page, *new_page;
     void *src, *dst;
-    unsigned long flags;
     struct subarray *sa;
-    struct zone *custom_zone;
-    int subarray_idx, idx;
     int ret = 0;
     struct mm_struct *mm;
     unsigned long vaddr;
@@ -9747,31 +9751,10 @@ int remap_user_page(struct iov_iter *iter, unsigned long origin_addr, unsigned l
     if (!old_page)
         return -EINVAL;
 
-    custom_zone = &NODE_DATA(0)->node_zones[ZONE_CUSTOM];
-    subarray_idx = pfn / SUBARRAY_PAGES - custom_zone->zone_start_pfn / SUBARRAY_PAGES;
-    sa = &custom_zone->subarrays[subarray_idx];
-
-    spin_lock_irqsave(&sa->lock, flags);
-    if (sa->count > 0) {
-        idx = find_first_bit(sa->bitmap, SUBARRAY_PAGES);
-        if (idx < SUBARRAY_PAGES) {
-            __clear_bit(idx, sa->bitmap);
-            new_page = pfn_to_page(sa->start_pfn + idx);
-            sa->count--;
-            spin_unlock_irqrestore(&sa->lock, flags);
-            ClearPageReserved(new_page);
-            post_alloc_hook(new_page, 0, GFP_KERNEL);
-        } else {
-            spin_unlock_irqrestore(&sa->lock, flags);
-            return -ENOMEM;
-        }
-    } else {
-        spin_unlock_irqrestore(&sa->lock, flags);
-        return -ENOMEM;
+    new_page = alloc_custom_page(0, 0);
+    if (!new_page) {
+      return -ENOMEM;
     }
-
-    if (unlikely(!new_page))
-        return -ENOMEM;
 
     // TODO: [yb] kmap atomic likely not necessary (no highmem)
     src = kmap_atomic(old_page);
