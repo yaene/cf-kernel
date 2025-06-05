@@ -3451,6 +3451,7 @@ void free_custom_page(struct page *page)
 	       current->comm, subarray_idx, idx, page_to_phys(page),
 	       page_to_pfn(page));
 	SetPageReserved(page);
+	__mod_zone_page_state(zone, NR_FREE_PAGES, 1);
 	return;
 }
 #endif
@@ -5444,44 +5445,55 @@ static inline bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
 }
 
 #ifdef CONFIG_ADD_ZONE
-struct page* alloc_custom_page(unsigned int order, int preferred_nid) { 
+struct page* alloc_custom_page(gfp_t gfp_mask, unsigned int order, int preferred_nid) {
+  struct page* page;
 	struct zone *custom_zone;
   struct subarray *sa;
   int subarray_idx;
 	unsigned long idx;
   unsigned long flags;
-	if (order == 0 && (strcmp(current->comm, "read_vs_mmap") == 0 ||
-			   is_uid_allowed(current->cred->uid.val))) {
-	custom_zone =
-			&NODE_DATA(preferred_nid)->node_zones[ZONE_CUSTOM];
-		if (custom_zone && strcmp(custom_zone->name, "Custom") == 0) {
-			for (subarray_idx = 0;
-			     subarray_idx < custom_zone->num_subarrays;
-			     subarray_idx++) {
-				sa = &custom_zone->subarrays[subarray_idx];
-				spin_lock_irqsave(&sa->lock, flags);
-				if (sa->count > 0) {
-					idx = find_first_bit(sa->bitmap,
-							     SUBARRAY_PAGES);
-					if (idx < SUBARRAY_PAGES) {
-						__clear_bit(idx, sa->bitmap);
-            page = pfn_to_page(sa->start_pfn + idx);
-						sa->count--;
-						spin_unlock_irqrestore(&sa->lock, flags);
-						printk(KERN_INFO
-						       "[add_zone]N=%s allocpage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
-						       current->comm,
-						       subarray_idx, idx, page_to_phys(page),
-						       page_to_pfn(page));
-						ClearPageReserved(page);
-            post_alloc_hook(page, 0, gfp_mask);
-            return page;
-					}
-				}
-				spin_unlock_irqrestore(&sa->lock, flags);
-			}
-		}
-	} 
+  unsigned long wmark;
+  if (order == 0 && (strcmp(current->comm, "read_vs_mmap") == 0 ||
+		     is_uid_allowed(current->cred->uid.val))) {
+	  custom_zone = &NODE_DATA(preferred_nid)->node_zones[ZONE_CUSTOM];
+	  wmark = wmark_pages(custom_zone, WMARK_LOW);
+	  if (zone_page_state(custom_zone, NR_FREE_PAGES) <= wmark) {
+      wakeup_kswapd(custom_zone, gfp_mask, order, ZONE_CUSTOM);
+	  }
+
+	  if (custom_zone && strcmp(custom_zone->name, "Custom") == 0) {
+		  for (subarray_idx = 0;
+		       subarray_idx < custom_zone->num_subarrays;
+		       subarray_idx++) {
+			  sa = &custom_zone->subarrays[subarray_idx];
+			  spin_lock_irqsave(&sa->lock, flags);
+			  if (sa->count > 0) {
+				  idx = find_first_bit(sa->bitmap,
+						       SUBARRAY_PAGES);
+				  if (idx < SUBARRAY_PAGES) {
+					  __clear_bit(idx, sa->bitmap);
+					  page = pfn_to_page(sa->start_pfn +
+							     idx);
+					  sa->count--;
+					  spin_unlock_irqrestore(&sa->lock,
+								 flags);
+					  __mod_zone_page_state(custom_zone,
+								NR_FREE_PAGES,
+								-1);
+					  printk(KERN_INFO
+						 "[add_zone]N=%s allocpage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
+						 current->comm, subarray_idx,
+						 idx, page_to_phys(page),
+						 page_to_pfn(page));
+					  ClearPageReserved(page);
+					  post_alloc_hook(page, 0, gfp_mask);
+					  return page;
+				  }
+			  }
+			  spin_unlock_irqrestore(&sa->lock, flags);
+		  }
+	  }
+  }
   return NULL;
 }
 #endif
@@ -5498,7 +5510,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
 	struct alloc_context ac = { };
 #ifdef CONFIG_ADD_ZONE
-	page = alloc_custom_page(order, preferred_nid);
+	page = alloc_custom_page(gfp_mask, order, preferred_nid);
 	if (page) {
 		return page;
 	}
@@ -7176,7 +7188,6 @@ void __meminit init_currently_empty_zone(struct zone *zone,
 			unsigned long subarray_start_idx, subarray_end_idx;
 			struct subarray *sa;
 			// int bit_i = 0;
-
 			start_pfn = zone->zone_start_pfn;
 			current_pfn = start_pfn;
 			end_pfn = start_pfn + size;
@@ -9742,7 +9753,6 @@ int remap_user_page(struct iov_iter *iter, unsigned long origin_addr, unsigned l
 {
     struct page *old_page, *new_page;
     void *src, *dst;
-    struct subarray *sa;
     int ret = 0;
     struct mm_struct *mm;
     unsigned long vaddr;
@@ -9751,7 +9761,7 @@ int remap_user_page(struct iov_iter *iter, unsigned long origin_addr, unsigned l
     if (!old_page)
         return -EINVAL;
 
-    new_page = alloc_custom_page(0, 0);
+    new_page = alloc_custom_page(GFP_KERNEL, 0, 0);
     if (!new_page) {
       return -ENOMEM;
     }

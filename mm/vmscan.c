@@ -1787,8 +1787,13 @@ static unsigned long isolate_lru_pages(unsigned long nr_to_scan,
 		nr_pages = compound_nr(page);
 		total_scan += nr_pages;
 
+    /*
+     * when reclaiming custom zone skip all other zones pages
+     */
 		if (page_zonenum(page) > sc->reclaim_idx ||
-				skip_cma(page, sc)) {
+		    (sc->reclaim_idx == ZONE_CUSTOM &&
+		     page_zonenum(page) != ZONE_CUSTOM) ||
+		    skip_cma(page, sc)) {
 			list_move(&page->lru, &pages_skipped);
 			nr_skipped[page_zonenum(page)] += nr_pages;
 			continue;
@@ -6340,6 +6345,13 @@ static bool pgdat_balanced(pg_data_t *pgdat, int order, int highest_zoneidx)
 	unsigned long mark = -1;
 	struct zone *zone;
 
+  /*
+   * If woken up by custom zone we want to reclaim in any case
+   */
+	if (highest_zoneidx == ZONE_CUSTOM) {
+		return false;
+	}
+
 	/*
 	 * Check watermarks bottom-up as lower zones are more likely to
 	 * meet watermarks.
@@ -6436,6 +6448,13 @@ static bool kswapd_shrink_node(pg_data_t *pgdat,
 
 		sc->nr_to_reclaim += max(high_wmark_pages(zone), SWAP_CLUSTER_MAX);
 	}
+
+  /*
+   * Try to reclaim until high wmark reached for custom zone
+   */
+  if (sc->reclaim_idx == ZONE_CUSTOM) {
+    sc->nr_to_reclaim = high_wmark_pages(zone);
+  }
 
 	/*
 	 * Historically care was taken to put equal pressure on all zones but
@@ -6928,8 +6947,15 @@ void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
 	pgdat = zone->zone_pgdat;
 	curr_idx = READ_ONCE(pgdat->kswapd_highest_zoneidx);
 
-	if (curr_idx == MAX_NR_ZONES || curr_idx < highest_zoneidx)
-		WRITE_ONCE(pgdat->kswapd_highest_zoneidx, highest_zoneidx);
+  if(highest_zoneidx == ZONE_CUSTOM) {
+		  printk(KERN_INFO "[yb] time to wake up!\n");
+      WRITE_ONCE(pgdat->kswapd_highest_zoneidx, ZONE_CUSTOM);
+  } else if(curr_idx == ZONE_CUSTOM) {
+      WRITE_ONCE(pgdat->kswapd_highest_zoneidx, highest_zoneidx);
+  } else if (curr_idx == MAX_NR_ZONES || curr_idx < highest_zoneidx) {
+		  WRITE_ONCE(pgdat->kswapd_highest_zoneidx, highest_zoneidx);
+  }
+
 
 	if (READ_ONCE(pgdat->kswapd_order) < order)
 		WRITE_ONCE(pgdat->kswapd_order, order);
