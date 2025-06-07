@@ -3439,5 +3439,5 @@ madvise_set_anon_name(struct mm_struct *mm, unsigned long start,
 #ifdef CONFIG_ADD_ZONE
 void __init init_allowed_uids(void);
 bool is_uid_allowed(int uid);
-int remap_user_page(struct iov_iter *iter, unsigned long uaddr, unsigned long pfn);
+int remap_user_page(unsigned long user_vaddr);
 #endif

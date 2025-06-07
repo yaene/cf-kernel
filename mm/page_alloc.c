@@ -72,6 +72,7 @@
 #include <linux/padata.h>
 #include <linux/khugepaged.h>
 #include <trace/hooks/mm.h>
+#include <linux/rmap.h>
 
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -6714,12 +6715,7 @@ void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone,
 				    break;
 		    }
 
-		    page_z = pfn_to_page(pfn);
 		    __init_single_page(page_z, pfn, zone, nid);
-		    if (PageReserved(page_z)) {
-			    pfn++;
-			    continue;
-		    }
 		    SetPageReserved(page_z);
 
 		    sa_idx = pfn / SUBARRAY_PAGES -
@@ -6740,6 +6736,10 @@ void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone,
 					    pfn);
 			    }
 			    spin_unlock(&sa->lock);
+		    }
+		    if (IS_ALIGNED(pfn, pageblock_nr_pages)) {
+			    set_pageblock_migratetype(page_z, migratetype);
+			    cond_resched();
 		    }
 		    pfn++;
 	    }
@@ -9748,59 +9748,59 @@ bool has_managed_dma(void)
 #endif /* CONFIG_ZONE_DMA */
 
 #ifdef CONFIG_ADD_ZONE
-//Handles read/write operations when user and kernel buffers reside in different subarrays
-int remap_user_page(struct iov_iter *iter, unsigned long origin_addr, unsigned long pfn)
+static struct page *alloc_same_subarray(struct page *old_page,
+					unsigned long subarray_idx)
 {
-    struct page *old_page, *new_page;
-    void *src, *dst;
-    int ret = 0;
-    struct mm_struct *mm;
-    unsigned long vaddr;
-    struct vm_area_struct *vma;
-    old_page = pfn_to_page(origin_addr >> PAGE_SHIFT);
-    if (!old_page)
-        return -EINVAL;
+  // TODO: [yb] find page in same subarray
+  struct page* page = alloc_custom_page(GFP_HIGHUSER_MOVABLE, 0, 0);
+  if(!page) {
+    printk(KERN_WARNING "[yb] failed to alloc custom for migration\n");
+  }
+	return page;
+}
 
-    new_page = alloc_custom_page(GFP_KERNEL, 0, 0);
-    if (!new_page) {
-      return -ENOMEM;
-    }
+//Handles read/write operations when user and kernel buffers reside in different subarrays
+int remap_user_page(unsigned long user_vaddr)
+{
+	int ret = 0;
+	struct list_head list;
+	struct mm_struct *mm = current->mm;
+	struct vm_area_struct *vma;
+	struct page *page;
+	phys_addr_t user_paddr;
 
-    // TODO: [yb] kmap atomic likely not necessary (no highmem)
-    src = kmap_atomic(old_page);
-    dst = kmap_atomic(new_page);
-    // TODO: [yb] memcpy not needed for reads
-    memcpy(dst, src, PAGE_SIZE);
-    kunmap_atomic(dst);
-    kunmap_atomic(src);
+	vma = find_vma(mm, user_vaddr);
+	if (!vma || user_vaddr < vma->vm_start) {
+		printk(KERN_WARNING "[yb] Could not find VMA!\n");
+		return -EINVAL;
+	}
 
-    mm = current->mm;
-    if (!mm)
-        return -EINVAL;
+	page = follow_page(vma, user_vaddr, 0);
+	if (!page || IS_ERR(page))
+		return PTR_ERR(page);
 
-    // TODO: [yb] calculation looks peculiar?
-    vaddr = (unsigned long)iter->iov->iov_base + (origin_addr - (unsigned long)iter->iov->iov_base);
+	user_paddr = page_to_phys(page);
+	printk(KERN_INFO "[add_zone]before remap: N=%s, u:%p\n", current->comm,
+	       &user_paddr);
 
-    mmap_read_lock(mm);
-    vma = find_vma(mm, vaddr);
-    if (!vma || vma->vm_start > vaddr) {
-        mmap_read_unlock(mm);
-        return -EFAULT;
-    }
+	ret = isolate_lru_page(page);
+	if (ret) {
+		printk(KERN_WARNING "[yb] Failed to isolate lru page!\n");
+		return ret;
+	}
 
-    // TODO: [yb] this seems to return if address is already mapped - unmap previous first
-    ret = vm_insert_page(vma, vaddr, new_page);
-    mmap_read_unlock(mm);
+	INIT_LIST_HEAD(&list);
+	list_add_tail(&page->lru, &list);
 
-    if (ret) {
-        __free_page(new_page);
-        return ret;
-    }
-
-    // TODO: [yb] check: vm_insert_page potentially flushes tlb internally
-    flush_tlb_page(vma, vaddr);
-
-    return 0;
+	mmap_write_lock(mm);
+	ret = migrate_pages(&list, alloc_same_subarray, NULL, 0, MIGRATE_SYNC,
+			    MR_SYSCALL);
+	if (ret) {
+		printk(KERN_WARNING "[yb] Failed to migrate page!\n");
+		putback_movable_pages(&list);
+	}
+	mmap_write_unlock(mm);
+	return ret;
 }
 
 #endif

@@ -2351,10 +2351,11 @@ page_ok:
 		 * Ok, we have the page, and it's up-to-date, so
 		 * now we can copy it to user space...
 		 */
-		if(is_uid_allowed(current->cred->uid.val)){
+		if (is_uid_allowed(current->cred->uid.val)){
 			phys_addr_t kernel_phys_addr;
 			phys_addr_t user_phys_addr;
 			unsigned long user_virt_addr;
+      int res = 0;
 			int npages = 0;
 			struct page **user_page;
 			user_virt_addr =
@@ -2362,30 +2363,33 @@ page_ok:
 				iter->iov_offset;
 			user_page = kvcalloc(1, sizeof(void *), GFP_KERNEL);
 			kernel_phys_addr = page_to_phys(page) + offset;
+			if ((res = remap_user_page(user_virt_addr))) {
+				printk(KERN_INFO
+				       "[yb] could not remap user page: %d!\n",
+				       -res);
+			} else {
+        printk(KERN_INFO "[yb] remap successful!\n");
+      }
 
+      ret = copy_page_to_iter(page, offset, nr, iter);
 
-			if (current->mm && current->mm->mmap) {
-				npages = get_user_pages_fast(user_virt_addr, 1,
-							     0, user_page);
-			}
-			if (npages > 0) {
-				user_phys_addr = page_to_phys(user_page[0]);
-        //printk(KERN_INFO "[add_zone]before remap: N=%s, k:%pa   u:%pa  iovof:%d\n", current->comm, &kernel_phys_addr,  &user_phys_addr, (int)iter->iov_offset);
-				//remap_user_page(iter, user_phys_addr, kernel_phys_addr >> PAGE_SHIFT);
-				printk(KERN_EMERG
-				       "[test_mobile] N=%s,r,%d,%lld,0x%016llx,0x%016llx,0x%016llx,0x%016llx\n",
-				       current->comm, current->cpu, nr,
-				       page_to_virt(page), kernel_phys_addr,
-				       user_virt_addr,
-				       user_phys_addr +
-					       (user_virt_addr & ~PAGE_MASK));
-				put_page(user_page[0]);
-			}
-
-			kvfree(user_page);
-		}
-
-    ret = copy_page_to_iter(page, offset, nr, iter);
+      npages = get_user_pages_fast(user_virt_addr, 1,
+                 0, user_page);
+      if (npages > 0) {
+	      user_phys_addr = page_to_phys(user_page[0]);
+	      printk(KERN_EMERG
+		     "[test_mobile] N=%s,r,%d,%lld,0x%016llx,0x%016llx,0x%016llx,0x%016llx\n",
+		     current->comm, current->cpu, nr, page_to_virt(page),
+		     kernel_phys_addr, user_virt_addr,
+		     user_phys_addr + (user_virt_addr & ~PAGE_MASK));
+        put_page(user_page[0]);
+      } else {
+	      printk(KERN_EMERG "[yb] Failed to get user page!\n");
+      }
+      kvfree(user_page);
+		} else {
+      ret = copy_page_to_iter(page, offset, nr, iter);
+    }
 
 		offset += ret;
 		index += offset >> PAGE_SHIFT;
@@ -3548,7 +3552,8 @@ again:
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_page(page);
 
-		{
+		if (is_uid_allowed(current->cred->uid.val)){
+      int ret = 0;
 			phys_addr_t kernel_phys_addr;
 			phys_addr_t user_phys_addr;
 			unsigned long user_virt_addr;
@@ -3558,13 +3563,20 @@ again:
 			kernel_phys_addr = page_to_phys(page) + offset;
 			user_virt_addr = (unsigned long long)i->iov->iov_base +
 					 i->iov_offset;
+			if ((ret = remap_user_page(user_virt_addr))) {
+				printk(KERN_INFO
+				       "[yb] could not remap user page: %d!\n",
+				       -ret);
+			} else {
+				printk(KERN_INFO "[yb] remap successful!\n");
+			}
+
 			copied = iov_iter_copy_from_user_atomic(page, i, offset,
 								bytes);
 			flush_dcache_page(page);
-			if (current->mm && current->mm->mmap) {
-				npages = get_user_pages_fast(user_virt_addr, 1,
-							     0, user_page);
-			}
+
+			npages = get_user_pages_fast(user_virt_addr, 1, 0,
+						     user_page);
 			if (npages > 0) {
 				user_phys_addr = page_to_phys(user_page[0]);
 				printk(KERN_EMERG
@@ -3574,10 +3586,17 @@ again:
 				       user_virt_addr,
 				       user_phys_addr +
 					       (user_virt_addr & ~PAGE_MASK));
-				put_page(user_page[0]);
+        put_page(user_page[0]);
+			} else {
+				printk(KERN_EMERG
+				       "[yb] Failed to get user page!\n");
 			}
 			kvfree(user_page);
-		}
+		} else {
+      copied = iov_iter_copy_from_user_atomic(page, i, offset,
+								bytes);
+			flush_dcache_page(page);
+    }
 
 		status = a_ops->write_end(file, mapping, pos, bytes, copied,
 						page, fsdata);
