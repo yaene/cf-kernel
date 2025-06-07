@@ -5455,56 +5455,42 @@ static inline bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
 }
 
 #ifdef CONFIG_ADD_ZONE
-struct page* alloc_custom_page(gfp_t gfp_mask, unsigned int order, int preferred_nid) {
-  struct page* page;
+struct page *alloc_custom_page(gfp_t gfp_mask, int preferred_nid)
+{
+	struct page *page;
 	struct zone *custom_zone;
-  struct subarray *sa;
-  int subarray_idx;
+	struct subarray *sa;
+	int subarray_idx;
 	unsigned long idx;
-  unsigned long flags;
-  unsigned long wmark;
-  if (order == 0 && (strcmp(current->comm, "read_vs_mmap") == 0 ||
-		     is_uid_allowed(current->cred->uid.val))) {
-	  custom_zone = &NODE_DATA(preferred_nid)->node_zones[ZONE_CUSTOM];
-	  wmark = wmark_pages(custom_zone, WMARK_LOW);
-	  if (zone_page_state(custom_zone, NR_FREE_PAGES) <= wmark) {
-      wakeup_kswapd(custom_zone, gfp_mask, order, ZONE_CUSTOM);
-	  }
+	unsigned long flags;
+	unsigned long wmark;
+	custom_zone = &NODE_DATA(preferred_nid)->node_zones[ZONE_CUSTOM];
+	wmark = wmark_pages(custom_zone, WMARK_LOW);
+	if (zone_page_state(custom_zone, NR_FREE_PAGES) <= wmark) {
+		wakeup_kswapd(custom_zone, gfp_mask, 0, ZONE_CUSTOM);
+	}
 
-	  if (custom_zone && strcmp(custom_zone->name, "Custom") == 0) {
-		  for (subarray_idx = 0;
-		       subarray_idx < custom_zone->num_subarrays;
-		       subarray_idx++) {
-			  sa = &custom_zone->subarrays[subarray_idx];
-			  spin_lock_irqsave(&sa->lock, flags);
-			  if (sa->count > 0) {
-				  idx = find_first_bit(sa->bitmap,
-						       SUBARRAY_PAGES);
-				  if (idx < SUBARRAY_PAGES) {
-					  __clear_bit(idx, sa->bitmap);
-					  page = pfn_to_page(sa->start_pfn +
-							     idx);
-					  sa->count--;
-					  spin_unlock_irqrestore(&sa->lock,
-								 flags);
-					  __mod_zone_page_state(custom_zone,
-								NR_FREE_PAGES,
-								-1);
-					  printk(KERN_INFO
-						 "[add_zone]N=%s allocpage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
-						 current->comm, subarray_idx,
-						 idx, page_to_phys(page),
-						 page_to_pfn(page));
-					  ClearPageReserved(page);
-					  post_alloc_hook(page, 0, gfp_mask);
-					  return page;
-				  }
-			  }
-			  spin_unlock_irqrestore(&sa->lock, flags);
-		  }
-	  }
-  }
-  return NULL;
+	for (subarray_idx = 0; subarray_idx < custom_zone->num_subarrays;
+	     subarray_idx++) {
+		sa = &custom_zone->subarrays[subarray_idx];
+		spin_lock_irqsave(&sa->lock, flags);
+		if (sa->count > 0) {
+			idx = find_first_bit(sa->bitmap, SUBARRAY_PAGES);
+			if (idx < SUBARRAY_PAGES) {
+				__clear_bit(idx, sa->bitmap);
+				page = pfn_to_page(sa->start_pfn + idx);
+				sa->count--;
+				spin_unlock_irqrestore(&sa->lock, flags);
+				__mod_zone_page_state(custom_zone,
+						      NR_FREE_PAGES, -1);
+				ClearPageReserved(page);
+				post_alloc_hook(page, 0, gfp_mask);
+				return page;
+			}
+		}
+		spin_unlock_irqrestore(&sa->lock, flags);
+	}
+	return NULL;
 }
 #endif
 
@@ -5520,10 +5506,12 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
 	struct alloc_context ac = { };
 #ifdef CONFIG_ADD_ZONE
-	page = alloc_custom_page(gfp_mask, order, preferred_nid);
-	if (page) {
-		return page;
-	}
+  if (is_uid_allowed(current->cred->uid.val))) {
+		  page = alloc_custom_page(gfp_mask, preferred_nid);
+		  if (page) {
+			  return page;
+		  }
+  }
 #endif
   if (unlikely(order >= MAX_ORDER)) {
 		WARN_ON_ONCE(!(gfp_mask & __GFP_NOWARN));
