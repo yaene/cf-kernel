@@ -3429,13 +3429,13 @@ static bool free_unref_page_commit(struct page *page, int migratetype,
 }
 
 #ifdef CONFIG_ADD_ZONE
-static int get_subarray_idx(struct page *page)
+int get_subarray_idx(struct page *page)
 {
 	struct zone *zone = page_zone(page);
   if (zone_idx(zone) != ZONE_CUSTOM)
     return -1;
 
-	return page_to_pfn(page) / 512) - (zone->zone_start_pfn / 512);
+	return page_to_pfn(page) / 512 - (zone->zone_start_pfn / 512);
 }
 
 void free_custom_page(struct page *page)
@@ -9777,11 +9777,11 @@ static struct page *alloc_same_subarray(struct page *old_page,
 			       current->comm, subarray_idx, idx,
 			       page_to_phys(page), page_to_pfn(page));
 			ClearPageReserved(page);
-			post_alloc_hook(page, 0, gfp_mask);
+			post_alloc_hook(page, 0, GFP_HIGHUSER_MOVABLE);
 			return page;
 		}
-		spin_unlock_irqrestore(&sa->lock, flags);
 	}
+  spin_unlock_irqrestore(&sa->lock, flags);
 	printk(KERN_WARNING "[yb] subarray full cannot migrate!\n");
 	return NULL;
 }
@@ -9810,6 +9810,10 @@ int remap_user_page(unsigned long user_vaddr, struct page* cache_page)
 	page = follow_page(vma, user_vaddr, 0);
 	if (!page || IS_ERR(page))
 		return PTR_ERR(page);
+  if (subarray_idx == get_subarray_idx(page)) {
+    // already in same subarray - we are done
+    return 0;
+  }
 
 	user_paddr = page_to_phys(page);
 	printk(KERN_INFO "[add_zone]before remap: N=%s, u:%p\n", current->comm,
