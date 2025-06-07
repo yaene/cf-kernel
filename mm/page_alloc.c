@@ -3429,6 +3429,15 @@ static bool free_unref_page_commit(struct page *page, int migratetype,
 }
 
 #ifdef CONFIG_ADD_ZONE
+static int get_subarray_idx(struct page *page)
+{
+	struct zone *zone = page_zone(page);
+  if (zone_idx(zone) != ZONE_CUSTOM)
+    return -1;
+
+	return page_to_pfn(page) / 512) - (zone->zone_start_pfn / 512);
+}
+
 void free_custom_page(struct page *page)
 {
 	// Specialized function for freeing order-0 pages
@@ -3436,10 +3445,10 @@ void free_custom_page(struct page *page)
 	unsigned long flags;
 	struct zone *zone = page_zone(page);
 	struct subarray *sa;
-	unsigned int subarray_idx;
+	int subarray_idx;
 	unsigned long idx;
 	// compute which subarray
-	subarray_idx = (pfn / 512) - (zone->zone_start_pfn / 512);
+	subarray_idx = get_subarray_idx(page);
 	sa = &zone->subarrays[subarray_idx];
 	idx = pfn & 511;
 	spin_lock_irqsave(&sa->lock, flags);
@@ -7201,15 +7210,10 @@ void __meminit init_currently_empty_zone(struct zone *zone,
 				unsigned long subarray_start, subarray_end;
 				
 				sa = &zone->subarrays[subarray_idx];
-				// for(bit_i = 0; bit_i < 8;bit_i ++)
-				// 	sa->bitmap[bit_i]=0;
 				bitmap_zero(sa->bitmap, SUBARRAY_PAGES);
-				__dma_flush_area(sa->bitmap, sizeof(sa->bitmap));
 				subarray_start = subarray_base_idx << 9;
 				subarray_end = (subarray_base_idx + 1) << 9;
 				sa->free_pages = NULL;
-				// sa->start_pfn = (subarray_start > current_pfn) ? subarray_start : current_pfn;
-				// sa->end_pfn = (subarray_end < end_pfn) ? subarray_end : end_pfn;
 				sa->start_pfn = subarray_start;
 				sa->end_pfn = subarray_end;
 				spin_lock_init(&sa->lock);
@@ -9748,19 +9752,42 @@ bool has_managed_dma(void)
 #endif /* CONFIG_ZONE_DMA */
 
 #ifdef CONFIG_ADD_ZONE
+
 static struct page *alloc_same_subarray(struct page *old_page,
 					unsigned long subarray_idx)
 {
-  // TODO: [yb] find page in same subarray
-  struct page* page = alloc_custom_page(GFP_HIGHUSER_MOVABLE, 0, 0);
-  if(!page) {
-    printk(KERN_WARNING "[yb] failed to alloc custom for migration\n");
-  }
-	return page;
+  struct page* page;
+	struct zone *custom_zone;
+	struct subarray *sa;
+	unsigned long idx;
+	unsigned long flags;
+	custom_zone = &NODE_DATA(0)->node_zones[ZONE_CUSTOM];
+	sa = &custom_zone->subarrays[subarray_idx];
+	spin_lock_irqsave(&sa->lock, flags);
+	if (sa->count > 0) {
+		idx = find_first_bit(sa->bitmap, SUBARRAY_PAGES);
+		if (idx < SUBARRAY_PAGES) {
+			__clear_bit(idx, sa->bitmap);
+			page = pfn_to_page(sa->start_pfn + idx);
+			sa->count--;
+			spin_unlock_irqrestore(&sa->lock, flags);
+			__mod_zone_page_state(custom_zone, NR_FREE_PAGES, -1);
+			printk(KERN_INFO
+			       "[add_zone]N=%s allocpage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
+			       current->comm, subarray_idx, idx,
+			       page_to_phys(page), page_to_pfn(page));
+			ClearPageReserved(page);
+			post_alloc_hook(page, 0, gfp_mask);
+			return page;
+		}
+		spin_unlock_irqrestore(&sa->lock, flags);
+	}
+	printk(KERN_WARNING "[yb] subarray full cannot migrate!\n");
+	return NULL;
 }
 
 //Handles read/write operations when user and kernel buffers reside in different subarrays
-int remap_user_page(unsigned long user_vaddr)
+int remap_user_page(unsigned long user_vaddr, struct page* cache_page)
 {
 	int ret = 0;
 	struct list_head list;
@@ -9768,6 +9795,11 @@ int remap_user_page(unsigned long user_vaddr)
 	struct vm_area_struct *vma;
 	struct page *page;
 	phys_addr_t user_paddr;
+  int subarray_idx = get_subarray_idx(cache_page);
+  if(subarray_idx < 0) {
+		printk(KERN_WARNING "[yb] page cache page not in custom zone!\n");
+		return -EINVAL;
+  }
 
 	vma = find_vma(mm, user_vaddr);
 	if (!vma || user_vaddr < vma->vm_start) {
@@ -9793,7 +9825,8 @@ int remap_user_page(unsigned long user_vaddr)
 	list_add_tail(&page->lru, &list);
 
 	mmap_write_lock(mm);
-	ret = migrate_pages(&list, alloc_same_subarray, NULL, 0, MIGRATE_SYNC,
+	ret = migrate_pages(&list, alloc_same_subarray, NULL,
+			    (unsigned long)subarray_idx, MIGRATE_SYNC,
 			    MR_SYSCALL);
 	if (ret) {
 		printk(KERN_WARNING "[yb] Failed to migrate page!\n");

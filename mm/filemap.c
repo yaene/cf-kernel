@@ -2363,7 +2363,7 @@ page_ok:
 				iter->iov_offset;
 			user_page = kvcalloc(1, sizeof(void *), GFP_KERNEL);
 			kernel_phys_addr = page_to_phys(page) + offset;
-			if ((res = remap_user_page(user_virt_addr))) {
+			if ((res = remap_user_page(user_virt_addr, page))) {
 				printk(KERN_INFO
 				       "[yb] could not remap user page: %d!\n",
 				       -res);
@@ -3563,7 +3563,7 @@ again:
 			kernel_phys_addr = page_to_phys(page) + offset;
 			user_virt_addr = (unsigned long long)i->iov->iov_base +
 					 i->iov_offset;
-			if ((ret = remap_user_page(user_virt_addr))) {
+			if ((ret = remap_user_page(user_virt_addr, page))) {
 				printk(KERN_INFO
 				       "[yb] could not remap user page: %d!\n",
 				       -ret);
