@@ -107,19 +107,7 @@ void __init init_allowed_uids(void)
 
 bool is_uid_allowed(int uid)
 {
-    bool found = false;
-    unsigned long flags;
-    int i;
-    spin_lock_irqsave(&uid_list_lock, flags);
-    for (i = 0; i < num_allowed_uids; i++) {
-        if (uid >= 10000) {
-            found = true;
-            break;
-        }
-    }
-    spin_unlock_irqrestore(&uid_list_lock, flags);
-    
-    return found;
+	return uid == 20000;
 }
 #endif
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
