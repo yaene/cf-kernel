@@ -73,6 +73,7 @@
 #include <linux/khugepaged.h>
 #include <trace/hooks/mm.h>
 #include <linux/rmap.h>
+#include <linux/prandom.h>
 
 #include <asm/sections.h>
 #include <asm/tlbflush.h>
@@ -1053,6 +1054,44 @@ buddy_merge_likely(unsigned long pfn, unsigned long buddy_pfn,
 	       page_is_buddy(higher_page, higher_buddy, order + 1);
 }
 
+#ifdef CONFIG_ADD_ZONE
+int get_subarray_idx(struct page *page)
+{
+	struct zone *zone = page_zone(page);
+  if (zone_idx(zone) != ZONE_CUSTOM)
+    return -1;
+
+	return page_to_pfn(page) / 512 - (zone->zone_start_pfn / 512);
+}
+
+void free_custom_page(struct page *page)
+{
+	// Specialized function for freeing order-0 pages
+	unsigned long pfn = page_to_pfn(page);
+	unsigned long flags;
+	struct zone *zone = page_zone(page);
+	struct subarray *sa;
+	int subarray_idx;
+	unsigned long idx;
+	// compute which subarray
+	subarray_idx = get_subarray_idx(page);
+	sa = &zone->subarrays[subarray_idx];
+	idx = pfn & 511;
+	spin_lock_irqsave(&sa->lock, flags);
+	__set_bit(idx, sa->bitmap);
+	sa->count++;
+	spin_unlock_irqrestore(&sa->lock, flags);
+
+	printk(KERN_INFO
+	       "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
+	       current->comm, subarray_idx, idx, page_to_phys(page),
+	       page_to_pfn(page));
+	SetPageReserved(page);
+	__mod_zone_page_state(zone, NR_FREE_PAGES, 1);
+	return;
+}
+#endif
+
 /*
  * Freeing function for a buddy system allocator.
  *
@@ -1088,6 +1127,15 @@ static inline void __free_one_page(struct page *page,
 	unsigned int max_order;
 	struct page *buddy;
 	bool to_tail;
+  int i;
+
+  if(zone_idx(zone) == ZONE_CUSTOM) {
+	  for (i = 0; i < (1 << order); ++i) {
+		  printk(KERN_EMERG "Freeing through free_one_page...\n");
+		  free_custom_page(page + i);
+	  }
+    return;
+  }
 
 	max_order = min_t(unsigned int, MAX_ORDER - 1, pageblock_order);
 
@@ -3416,45 +3464,6 @@ static bool free_unref_page_commit(struct page *page, int migratetype,
 	return true;
 }
 
-#ifdef CONFIG_ADD_ZONE
-int get_subarray_idx(struct page *page)
-{
-	struct zone *zone = page_zone(page);
-  if (zone_idx(zone) != ZONE_CUSTOM)
-    return -1;
-
-	return page_to_pfn(page) / 512 - (zone->zone_start_pfn / 512);
-}
-
-void free_custom_page(struct page *page)
-{
-	// Specialized function for freeing order-0 pages
-	unsigned long pfn = page_to_pfn(page);
-	unsigned long flags;
-	struct zone *zone = page_zone(page);
-	struct subarray *sa;
-	int subarray_idx;
-	unsigned long idx;
-	// compute which subarray
-	subarray_idx = get_subarray_idx(page);
-	sa = &zone->subarrays[subarray_idx];
-	idx = pfn & 511;
-	spin_lock_irqsave(&sa->lock, flags);
-	__set_bit(idx, sa->bitmap);
-	sa->count++;
-	spin_unlock_irqrestore(&sa->lock, flags);
-
-	printk(KERN_INFO
-	       "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
-	       current->comm, subarray_idx, idx, page_to_phys(page),
-	       page_to_pfn(page));
-	SetPageReserved(page);
-	__mod_zone_page_state(zone, NR_FREE_PAGES, 1);
-	return;
-}
-#endif
-
-
 /*
  * Free a 0-order page
  */
@@ -5448,7 +5457,7 @@ struct page *alloc_custom_page(gfp_t gfp_mask, int preferred_nid)
 	struct page *page;
 	struct zone *custom_zone;
 	struct subarray *sa;
-	int subarray_idx;
+	u32 subarray_idx;
 	unsigned long idx;
 	unsigned long flags;
 	unsigned long wmark;
@@ -5458,26 +5467,28 @@ struct page *alloc_custom_page(gfp_t gfp_mask, int preferred_nid)
 		wakeup_kswapd(custom_zone, gfp_mask, 0, ZONE_CUSTOM);
 	}
 
-	for (subarray_idx = 0; subarray_idx < custom_zone->num_subarrays;
-	     subarray_idx++) {
-		sa = &custom_zone->subarrays[subarray_idx];
-		spin_lock_irqsave(&sa->lock, flags);
-		if (sa->count > 0) {
-			idx = find_first_bit(sa->bitmap, SUBARRAY_PAGES);
-			if (idx < SUBARRAY_PAGES) {
-				__clear_bit(idx, sa->bitmap);
-				page = pfn_to_page(sa->start_pfn + idx);
-				sa->count--;
-				spin_unlock_irqrestore(&sa->lock, flags);
-				__mod_zone_page_state(custom_zone,
-						      NR_FREE_PAGES, -1);
-				ClearPageReserved(page);
-				post_alloc_hook(page, 0, gfp_mask);
-				return page;
-			}
-		}
-		spin_unlock_irqrestore(&sa->lock, flags);
+  subarray_idx = prandom_u32_max(custom_zone->num_subarrays);
+  printk(KERN_INFO "[add_zone] Trying to allocate from subarray: %d\n", subarray_idx);
+  sa = &custom_zone->subarrays[subarray_idx];
+  spin_lock_irqsave(&sa->lock, flags);
+  if (sa->count > 0) {
+	  idx = find_first_bit(sa->bitmap, SUBARRAY_PAGES);
+	  if (idx < SUBARRAY_PAGES) {
+		  __clear_bit(idx, sa->bitmap);
+		  page = pfn_to_page(sa->start_pfn + idx);
+		  sa->count--;
+		  spin_unlock_irqrestore(&sa->lock, flags);
+		  __mod_zone_page_state(custom_zone, NR_FREE_PAGES, -1);
+		  ClearPageReserved(page);
+		  post_alloc_hook(page, 0, gfp_mask);
+		  printk(KERN_INFO
+			 "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
+			 current->comm, subarray_idx, idx, page_to_phys(page),
+			 page_to_pfn(page));
+		  return page;
+	  }
 	}
+	spin_unlock_irqrestore(&sa->lock, flags);
 	return NULL;
 }
 #endif
@@ -6690,9 +6701,6 @@ void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone,
 #ifdef CONFIG_ADD_ZONE
     if (zone == ZONE_CUSTOM) {
 	    //After initializing each page, inserts individual pages into their corresponding subarray queues.
-	    struct zone *z = &NODE_DATA(nid)->node_zones[zone];
-	    unsigned long sa_idx = 0;
-	    unsigned long bitmap_idx;
 	    for (pfn = start_pfn; pfn < end_pfn;) {
 		    struct page *page_z = pfn_to_page(pfn);
 		    if (context == MEMINIT_EARLY) {
@@ -6705,25 +6713,6 @@ void __meminit memmap_init_zone(unsigned long size, int nid, unsigned long zone,
 		    __init_single_page(page_z, pfn, zone, nid);
 		    SetPageReserved(page_z);
 
-		    sa_idx = pfn / SUBARRAY_PAGES -
-			     z->zone_start_pfn / SUBARRAY_PAGES;
-		    if (sa_idx < z->num_subarrays && sa_idx >= 0) {
-			    struct subarray *sa = &z->subarrays[sa_idx];
-			    bitmap_idx = pfn & 511;
-			    spin_lock(&sa->lock);
-			    if (!test_and_set_bit(bitmap_idx, sa->bitmap)) {
-				    sa->count++;
-				    // TODO: [yb] is this necessary?
-				    __dma_flush_area(sa->bitmap,
-						     sizeof(sa->bitmap));
-			    } else {
-				    WARN_ONCE(
-					    1,
-					    "Page PFN %lu already activated\n",
-					    pfn);
-			    }
-			    spin_unlock(&sa->lock);
-		    }
 		    if (IS_ALIGNED(pfn, pageblock_nr_pages)) {
 			    set_pageblock_migratetype(page_z, migratetype);
 			    cond_resched();
@@ -8243,17 +8232,6 @@ void __init free_area_init(unsigned long *max_zone_pfn)
 		subsection_map_init(start_pfn, end_pfn - start_pfn);
 	}
 
-#ifdef CONFIG_ADD_ZONE
-{
-//This mechanism preserves the entire ZONE_CUSTOM memory region, preventing allocation by other situation
-	unsigned long start_pfn = max_zone_pfn[ZONE_NORMAL];
-    unsigned long end_pfn = max_zone_pfn[ZONE_CUSTOM];
-    phys_addr_t start = start_pfn << PAGE_SHIFT;
-    phys_addr_t size = (end_pfn - start_pfn) << PAGE_SHIFT;
-
-    memblock_reserve(start, size);
-}
-#endif
 	/* Initialise every node */
 	mminit_verify_pageflags_layout();
 	setup_nr_node_ids();
