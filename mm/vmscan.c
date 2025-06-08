@@ -6948,7 +6948,6 @@ void wakeup_kswapd(struct zone *zone, gfp_t gfp_flags, int order,
 	curr_idx = READ_ONCE(pgdat->kswapd_highest_zoneidx);
 
   if(highest_zoneidx == ZONE_CUSTOM) {
-		  printk(KERN_INFO "[yb] time to wake up!\n");
       WRITE_ONCE(pgdat->kswapd_highest_zoneidx, ZONE_CUSTOM);
   } else if(curr_idx == ZONE_CUSTOM) {
       WRITE_ONCE(pgdat->kswapd_highest_zoneidx, highest_zoneidx);
