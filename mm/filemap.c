@@ -3574,21 +3574,23 @@ again:
 			kernel_phys_addr = page_to_phys(page) + offset;
 			user_virt_addr = (unsigned long long)i->iov->iov_base +
 					 i->iov_offset;
-			if ((ret = remap_user_page(user_virt_addr, page))) {
-				printk(KERN_INFO
-				       "[yb] could not remap user page: %d!\n",
-				       -ret);
-			} else {
-				printk(KERN_INFO "[yb] remap successful!\n");
-			}
+      npages = get_user_pages_fast(user_virt_addr, 1, 0,
+						     user_page);
+
+      if (npages > 0) {
+	      if (!(ret = remap_kernel_page(user_page[0], page))) {
+          // if remap successful need to find new page again
+          put_page(user_page[0]);
+          kvfree(user_page);
+          goto again;
+        }
+      }
 
 			copied = iov_iter_copy_from_user_atomic(page, i, offset,
 								bytes);
 			flush_dcache_page(page);
 
-			npages = get_user_pages_fast(user_virt_addr, 1, 0,
-						     user_page);
-			if (npages > 0) {
+      if (npages > 0) {
 				user_phys_addr = page_to_phys(user_page[0]);
 				printk(KERN_EMERG
 				       "[test_mobile] N=%s,w,%d,%llu,0x%016llx,0x%016llx,0x%016llx,0x%016llx\n",

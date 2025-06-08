@@ -107,7 +107,7 @@ void __init init_allowed_uids(void)
 
 bool is_uid_allowed(int uid)
 {
-	return uid == 20000;
+	return uid >= 10115;
 }
 #endif
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
@@ -5494,7 +5494,7 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
 	struct alloc_context ac = { };
 #ifdef CONFIG_ADD_ZONE
-  if (is_uid_allowed(current->cred->uid.val))) {
+  if (is_uid_allowed(current->cred->uid.val)) {
 		  page = alloc_custom_page(gfp_mask, preferred_nid);
 		  if (page) {
 			  return page;
@@ -9760,6 +9760,50 @@ static struct page *alloc_same_subarray(struct page *old_page,
   spin_unlock_irqrestore(&sa->lock, flags);
 	printk(KERN_WARNING "[yb] subarray full cannot migrate!\n");
 	return NULL;
+}
+
+int remap_kernel_page(struct page* user_page, struct page* cache_page)
+{
+	int ret = 0;
+	struct list_head list;
+	struct mm_struct *mm = current->mm;
+	phys_addr_t kernel_paddr;
+  int subarray_idx = get_subarray_idx(user_page);
+  if(subarray_idx < 0) {
+		printk(KERN_WARNING "[yb] user page not in custom zone!\n");
+		return -EINVAL;
+  }
+
+  if (subarray_idx == get_subarray_idx(cache_page)) {
+    // already in same subarray - we are done
+    // do not return zero as there are two different success cases that need to
+    // be handled differently: 1. remapping done 2. remapping not necessary
+    return 1;
+  }
+
+	kernel_paddr = page_to_phys(cache_page);
+	printk(KERN_INFO "[add_zone]before remap: N=%s, u:%p\n", current->comm,
+	       &kernel_paddr);
+
+	ret = isolate_lru_page(cache_page);
+	if (ret) {
+		printk(KERN_WARNING "[yb] Failed to isolate lru page!\n");
+		return ret;
+	}
+
+	INIT_LIST_HEAD(&list);
+	list_add_tail(&cache_page->lru, &list);
+
+	mmap_write_lock(mm);
+	ret = migrate_pages(&list, alloc_same_subarray, NULL,
+			    (unsigned long)subarray_idx, MIGRATE_SYNC,
+			    MR_SYSCALL);
+	if (ret) {
+		printk(KERN_WARNING "[yb] Failed to migrate page!\n");
+		putback_movable_pages(&list);
+	}
+	mmap_write_unlock(mm);
+	return ret;
 }
 
 //Handles read/write operations when user and kernel buffers reside in different subarrays
