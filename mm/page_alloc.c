@@ -5494,11 +5494,13 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
 	struct alloc_context ac = { };
 #ifdef CONFIG_ADD_ZONE
-  if (is_uid_allowed(current->cred->uid.val)) {
+  if (order == 0 && is_uid_allowed(current->cred->uid.val)) {
 		  page = alloc_custom_page(gfp_mask, preferred_nid);
 		  if (page) {
 			  return page;
-		  }
+		  } else {
+      printk(KERN_WARNING "[yb] OOM: fallback to normal zone!\n");
+    }
   }
 #endif
   if (unlikely(order >= MAX_ORDER)) {
@@ -9766,7 +9768,6 @@ int remap_kernel_page(struct page* user_page, struct page* cache_page)
 {
 	int ret = 0;
 	struct list_head list;
-	struct mm_struct *mm = current->mm;
 	phys_addr_t kernel_paddr;
   int subarray_idx = get_subarray_idx(user_page);
   if(subarray_idx < 0) {
@@ -9794,7 +9795,6 @@ int remap_kernel_page(struct page* user_page, struct page* cache_page)
 	INIT_LIST_HEAD(&list);
 	list_add_tail(&cache_page->lru, &list);
 
-	mmap_write_lock(mm);
 	ret = migrate_pages(&list, alloc_same_subarray, NULL,
 			    (unsigned long)subarray_idx, MIGRATE_SYNC,
 			    MR_SYSCALL);
@@ -9802,7 +9802,6 @@ int remap_kernel_page(struct page* user_page, struct page* cache_page)
 		printk(KERN_WARNING "[yb] Failed to migrate page!\n");
 		putback_movable_pages(&list);
 	}
-	mmap_write_unlock(mm);
 	return ret;
 }
 
@@ -9848,7 +9847,6 @@ int remap_user_page(unsigned long user_vaddr, struct page* cache_page)
 	INIT_LIST_HEAD(&list);
 	list_add_tail(&page->lru, &list);
 
-	mmap_write_lock(mm);
 	ret = migrate_pages(&list, alloc_same_subarray, NULL,
 			    (unsigned long)subarray_idx, MIGRATE_SYNC,
 			    MR_SYSCALL);
@@ -9856,7 +9854,6 @@ int remap_user_page(unsigned long user_vaddr, struct page* cache_page)
 		printk(KERN_WARNING "[yb] Failed to migrate page!\n");
 		putback_movable_pages(&list);
 	}
-	mmap_write_unlock(mm);
 	return ret;
 }
 
