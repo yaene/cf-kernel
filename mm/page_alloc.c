@@ -108,8 +108,8 @@ void __init init_allowed_uids(void)
 
 bool is_uid_allowed(int uid)
 {
-  return true;
 	//return uid >= 10115;
+  return true;
 }
 #endif
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
@@ -7164,8 +7164,8 @@ void __meminit init_currently_empty_zone(struct zone *zone,
 			end_pfn = start_pfn + size;
 			zone-> zone_end_pfn = end_pfn;
 			subarray_start_idx = start_pfn / 512;
-			subarray_end_idx = end_pfn / 512;
-			zone->num_subarrays = subarray_end_idx - subarray_start_idx + 1;
+			subarray_end_idx = (end_pfn - 1) / 512;
+			zone->num_subarrays = subarray_end_idx - subarray_start_idx;
 
 			for (subarray_idx = 0; subarray_idx < zone->num_subarrays; subarray_idx++) {
 				unsigned long subarray_base_idx = subarray_start_idx + subarray_idx;

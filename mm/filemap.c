@@ -3562,7 +3562,7 @@ ssize_t generic_perform_write(struct file *file, struct iov_iter *i, loff_t pos)
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_page(page);
 
-		if (is_uid_allowed(current->cred->uid.val)) {
+		if (current->mm && is_uid_allowed(current->cred->uid.val)) {
 			int ret = 0;
 			phys_addr_t kernel_phys_addr;
 			phys_addr_t user_phys_addr;
