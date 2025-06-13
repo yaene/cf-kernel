@@ -108,7 +108,8 @@ void __init init_allowed_uids(void)
 
 bool is_uid_allowed(int uid)
 {
-	return uid >= 10115;
+  return true;
+	//return uid >= 10115;
 }
 #endif
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
@@ -1081,11 +1082,6 @@ void free_custom_page(struct page *page)
 	__set_bit(idx, sa->bitmap);
 	sa->count++;
 	spin_unlock_irqrestore(&sa->lock, flags);
-
-	printk(KERN_INFO
-	       "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
-	       current->comm, subarray_idx, idx, page_to_phys(page),
-	       page_to_pfn(page));
 	SetPageReserved(page);
 	__mod_zone_page_state(zone, NR_FREE_PAGES, 1);
 	return;
@@ -1131,7 +1127,6 @@ static inline void __free_one_page(struct page *page,
 
   if(zone_idx(zone) == ZONE_CUSTOM) {
 	  for (i = 0; i < (1 << order); ++i) {
-		  printk(KERN_EMERG "Freeing through free_one_page...\n");
 		  free_custom_page(page + i);
 	  }
     return;
@@ -9728,10 +9723,6 @@ static struct page *alloc_same_subarray(struct page *old_page,
 			sa->count--;
 			spin_unlock_irqrestore(&sa->lock, flags);
 			__mod_zone_page_state(custom_zone, NR_FREE_PAGES, -1);
-			printk(KERN_INFO
-			       "[add_zone]N=%s allocpage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
-			       current->comm, subarray_idx, idx,
-			       page_to_phys(page), page_to_pfn(page));
 			ClearPageReserved(page);
 			post_alloc_hook(page, 0, GFP_HIGHUSER_MOVABLE);
 			return page;

@@ -35,7 +35,7 @@
 #define SUBARRAY_SIZE (512 * PAGE_SIZE)  // 2MB
 #define SUBARRAY_PAGES 512
 #define SUBARRAY_SHIFT 21
-#define CUSTOM_ZONE_PAGES (512 * 512 )     // total pages of zone_custom
+#define CUSTOM_ZONE_PAGES (8 * 512 * 512)     // total pages of zone_custom
 struct subarray {
     spinlock_t lock;
     struct page *free_pages;
@@ -825,7 +825,7 @@ struct zone {
 	,I directly implemented a fixed-length array. You can modify its size as needed.
 */
   // TODO: [yb] why 1026? also this breaks android's KABI, might cause problems with vendor modules
-  struct subarray subarrays[1026];
+  struct subarray subarrays[4096];
   unsigned int num_subarrays;
 	unsigned long		zone_end_pfn;
 	ANDROID_KABI_RESERVE(1);
