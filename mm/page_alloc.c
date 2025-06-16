@@ -108,8 +108,7 @@ void __init init_allowed_uids(void)
 
 bool is_uid_allowed(int uid)
 {
-	//return uid >= 10115;
-  return true;
+	return uid >= 10000;
 }
 #endif
 /* Free Page Internal flags: for internal, non-pcp variants of free_pages(). */
@@ -9805,10 +9804,6 @@ int remap_user_page(unsigned long user_vaddr, struct page* cache_page)
 	       &user_paddr);
 
 	ret = isolate_lru_page(page);
-	if (ret) {
-		printk(KERN_WARNING "[yb] Failed to isolate lru page!\n");
-		return ret;
-	}
 
 	INIT_LIST_HEAD(&list);
 	list_add_tail(&page->lru, &list);
