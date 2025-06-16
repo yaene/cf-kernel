@@ -2359,6 +2359,7 @@ ssize_t generic_file_buffered_read(struct kiocb *iocb, struct iov_iter *iter,
 			unsigned long user_virt_addr;
 			int subarray_idx;
 			int res = 0;
+		  unsigned long to_copy = nr;
 			int npages = 0;
 			struct page **user_page;
 			user_virt_addr =
@@ -2366,7 +2367,11 @@ ssize_t generic_file_buffered_read(struct kiocb *iocb, struct iov_iter *iter,
 				iter->iov_offset;
 			user_page = kvcalloc(1, sizeof(void *), GFP_KERNEL);
 			kernel_phys_addr = page_to_phys(page) + offset;
-			if (nr == 4096 &&
+      if (iter->count < nr) {
+        to_copy = iter->count;
+      }
+      to_copy = min(to_copy, iter->iov->iov_len - iter->iov_offset);
+			if (to_copy == 4096 &&
 			    ((user_virt_addr) & (~PAGE_MASK)) == 0) {
 				if ((res = remap_user_page(user_virt_addr,
 							   page))) {
