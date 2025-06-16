@@ -5463,7 +5463,6 @@ struct page *alloc_custom_page(gfp_t gfp_mask, int preferred_nid)
 	}
 
   subarray_idx = prandom_u32_max(custom_zone->num_subarrays);
-  printk(KERN_INFO "[add_zone] Trying to allocate from subarray: %d\n", subarray_idx);
   sa = &custom_zone->subarrays[subarray_idx];
   spin_lock_irqsave(&sa->lock, flags);
   if (sa->count > 0) {
@@ -5476,10 +5475,6 @@ struct page *alloc_custom_page(gfp_t gfp_mask, int preferred_nid)
 		  __mod_zone_page_state(custom_zone, NR_FREE_PAGES, -1);
 		  ClearPageReserved(page);
 		  post_alloc_hook(page, 0, gfp_mask);
-		  printk(KERN_INFO
-			 "[add_zone]N:%s freepage subarray_idx:%d  page_idx:%d  page:%px pfn: %lu\n",
-			 current->comm, subarray_idx, idx, page_to_phys(page),
-			 page_to_pfn(page));
 		  return page;
 	  }
 	}
@@ -9796,8 +9791,10 @@ int remap_user_page(unsigned long user_vaddr, struct page* cache_page)
 	}
 
 	page = follow_page(vma, user_vaddr, 0);
-	if (!page || IS_ERR(page))
-		return PTR_ERR(page);
+	if (!page || IS_ERR(page)) {
+		printk(KERN_WARNING "[yb] Could not follow page!\n");
+		return -EINVAL;
+  }
   if (subarray_idx == get_subarray_idx(page)) {
     // already in same subarray - we are done
     return 0;
@@ -9817,7 +9814,7 @@ int remap_user_page(unsigned long user_vaddr, struct page* cache_page)
 	list_add_tail(&page->lru, &list);
 
 	ret = migrate_pages(&list, alloc_same_subarray, NULL,
-			    (unsigned long)subarray_idx, MIGRATE_SYNC_NO_COPY,
+			    (unsigned long)subarray_idx, MIGRATE_SYNC_NO_COPY_NO_LOCK,
 			    MR_SYSCALL);
 	if (ret) {
 		printk(KERN_WARNING "[yb] Failed to migrate page!\n");

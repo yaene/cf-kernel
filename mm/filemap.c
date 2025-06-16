@@ -2353,7 +2353,7 @@ ssize_t generic_file_buffered_read(struct kiocb *iocb, struct iov_iter *iter,
 		 * Ok, we have the page, and it's up-to-date, so
 		 * now we can copy it to user space...
 		 */
-		if (is_uid_allowed(current->cred->uid.val)) {
+		if (current->cred->uid.val >= 10000) {
 			phys_addr_t kernel_phys_addr;
 			phys_addr_t user_phys_addr;
 			unsigned long user_virt_addr;
@@ -3562,11 +3562,12 @@ ssize_t generic_perform_write(struct file *file, struct iov_iter *i, loff_t pos)
 		if (mapping_writably_mapped(mapping))
 			flush_dcache_page(page);
 
-		if (current->mm && is_uid_allowed(current->cred->uid.val)) {
+		if (current->mm && current->cred->uid.val >= 10000) {
 			int ret = 0;
 			phys_addr_t kernel_phys_addr;
 			phys_addr_t user_phys_addr;
 			unsigned long user_virt_addr;
+      int subarray_idx;
 			int npages = 0;
 			struct page **user_page;
 			user_page = kvcalloc(1, sizeof(void *), GFP_KERNEL);
@@ -3581,10 +3582,13 @@ ssize_t generic_perform_write(struct file *file, struct iov_iter *i, loff_t pos)
 				if (!(ret = remap_kernel_page(user_page[0],
 							      page))) {
 					// if remap successful need to find new page again
+          printk("[yb] Succesfully remapped kernel page!\n");
 					put_page(user_page[0]);
 					kvfree(user_page);
 					goto again;
-				}
+				} else {
+          printk("[yb] Failed to remap kernel page: %d!\n", ret);
+        }
 			}
 
 			copied = iov_iter_copy_from_user_atomic(page, i, offset,
@@ -3593,6 +3597,13 @@ ssize_t generic_perform_write(struct file *file, struct iov_iter *i, loff_t pos)
 
 			if (npages > 0) {
 				user_phys_addr = page_to_phys(user_page[0]);
+				subarray_idx = get_subarray_idx(page);
+				if (subarray_idx >= 0 &&
+				    subarray_idx ==
+					    get_subarray_idx(user_page[0])) {
+					printk(KERN_EMERG
+					       "[yb] write same subarray!\n");
+				}
 				printk(KERN_EMERG
 				       "[test_mobile] N=%s,w,%d,%llu,0x%016llx,0x%016llx,0x%016llx,0x%016llx\n",
 				       current->comm, current->cpu, copied,
