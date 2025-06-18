@@ -9759,7 +9759,7 @@ int remap_kernel_page(struct page* user_page, struct page* cache_page)
 	list_add_tail(&cache_page->lru, &list);
 
 	ret = migrate_pages(&list, alloc_same_subarray, NULL,
-			    (unsigned long)subarray_idx, MIGRATE_SYNC_NO_COPY,
+			    (unsigned long)subarray_idx, MIGRATE_SYNC_NO_COPY_NO_LOCK,
 			    MR_SYSCALL);
 	if (ret) {
 		printk(KERN_WARNING "[yb] Failed to migrate page!\n");
@@ -9809,7 +9809,7 @@ int remap_user_page(unsigned long user_vaddr, struct page* cache_page)
 	list_add_tail(&page->lru, &list);
 
 	ret = migrate_pages(&list, alloc_same_subarray, NULL,
-			    (unsigned long)subarray_idx, MIGRATE_SYNC_NO_COPY_NO_LOCK,
+			    (unsigned long)subarray_idx, MIGRATE_SYNC_NO_COPY,
 			    MR_SYSCALL);
 	if (ret) {
 		printk(KERN_WARNING "[yb] Failed to migrate page!\n");
