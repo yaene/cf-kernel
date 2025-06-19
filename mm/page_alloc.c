@@ -9751,9 +9751,23 @@ int remap_kernel_page(struct page* user_page, struct page* cache_page)
 
 	ret = isolate_lru_page(cache_page);
 	if (ret) {
-		printk(KERN_WARNING "[yb] Failed to isolate lru page!\n");
-		return ret;
+    /*
+     * this happens when a page is freshly allocated by the FS
+     * and only just queued to be put on LRU. Try to drain the queue.
+     */
+    lru_add_drain();
+    ret = isolate_lru_page(cache_page);
+
+    if (ret) {
+      printk(KERN_WARNING "[yb] Failed to isolate lru page!\n");
+      return ret;
+    }
 	}
+  /*
+   * the page is already kept by the fs
+   * code remove extra reference from isolate lru
+   */
+  put_page(cache_page);
 
 	INIT_LIST_HEAD(&list);
 	list_add_tail(&cache_page->lru, &list);

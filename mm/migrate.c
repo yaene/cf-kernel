@@ -1007,9 +1007,8 @@ static int __unmap_and_move(struct page *page, struct page *newpage,
 	int page_was_mapped = 0;
 	struct anon_vma *anon_vma = NULL;
 	bool is_lru = !__PageMovable(page);
-  bool locked = false;
 
-	if (!(locked = trylock_page(page)) && mode != MIGRATE_SYNC_NO_COPY_NO_LOCK) {
+	if (!trylock_page(page) && mode != MIGRATE_SYNC_NO_COPY_NO_LOCK) {
 		if (!force || mode == MIGRATE_ASYNC)
 			goto out;
 
@@ -1124,9 +1123,7 @@ out_unlock:
 	/* Drop an anon_vma reference if we took one */
 	if (anon_vma)
 		put_anon_vma(anon_vma);
-  if (locked) {
-	  unlock_page(page);
-  }
+  unlock_page(page);
 out:
 	/*
 	 * If migration is successful, decrease refcount of the newpage
