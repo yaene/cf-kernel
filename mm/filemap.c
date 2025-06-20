@@ -2356,14 +2356,14 @@ ssize_t generic_file_buffered_read(struct kiocb *iocb, struct iov_iter *iter,
 		if (current->cred->uid.val >= 10000) {
 			phys_addr_t kernel_phys_addr;
 			phys_addr_t user_phys_addr;
-			unsigned long user_virt_addr;
+			uintptr_t user_virt_addr;
 			int subarray_idx;
 			int res = 0;
 		  unsigned long to_copy = nr;
 			int npages = 0;
 			struct page **user_page;
 			user_virt_addr =
-				(unsigned long long)iter->iov->iov_base +
+				(uintptr_t)iter->iov->iov_base +
 				iter->iov_offset;
 			user_page = kvcalloc(1, sizeof(void *), GFP_KERNEL);
 			kernel_phys_addr = page_to_phys(page) + offset;
@@ -3571,13 +3571,13 @@ ssize_t generic_perform_write(struct file *file, struct iov_iter *i, loff_t pos)
 			int ret = 0;
 			phys_addr_t kernel_phys_addr;
 			phys_addr_t user_phys_addr;
-			unsigned long user_virt_addr;
+			uintptr_t user_virt_addr;
       int subarray_idx;
 			int npages = 0;
 			struct page **user_page;
 			user_page = kvcalloc(1, sizeof(void *), GFP_KERNEL);
 			kernel_phys_addr = page_to_phys(page) + offset;
-			user_virt_addr = (unsigned long long)i->iov->iov_base +
+			user_virt_addr = (uintptr_t)i->iov->iov_base +
 					 i->iov_offset;
 			npages = get_user_pages_fast(user_virt_addr, 1, 0,
 						     user_page);

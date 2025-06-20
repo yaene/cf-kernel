@@ -9797,13 +9797,16 @@ int remap_user_page(unsigned long user_vaddr, struct page* cache_page)
 		return -EINVAL;
   }
 
-	vma = find_vma(mm, user_vaddr);
+  mmap_read_lock(mm);
+	vma = find_vma(mm, untagged_addr(user_vaddr));
 	if (!vma || user_vaddr < vma->vm_start) {
+    mmap_read_unlock(mm);
 		printk(KERN_WARNING "[yb] Could not find VMA!\n");
 		return -EINVAL;
 	}
 
 	page = follow_page(vma, user_vaddr, 0);
+  mmap_read_unlock(mm);
 	if (!page || IS_ERR(page)) {
 		printk(KERN_WARNING "[yb] Could not follow page!\n");
 		return -EINVAL;
@@ -9818,6 +9821,17 @@ int remap_user_page(unsigned long user_vaddr, struct page* cache_page)
 	       &user_paddr);
 
 	ret = isolate_lru_page(page);
+  if (ret) {
+    /*
+     * try to drain in case the page was newly allocated and not yet added to lru
+     */
+    lru_add_drain();
+    ret = isolate_lru_page(page);
+    if (ret) {
+      printk(KERN_WARNING "[yb] Failed to isolate lru page!\n");
+      return ret;
+    }
+	}
 
 	INIT_LIST_HEAD(&list);
 	list_add_tail(&page->lru, &list);
